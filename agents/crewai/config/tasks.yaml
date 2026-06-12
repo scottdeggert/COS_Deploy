@@ -1,0 +1,24 @@
+# Expand as agent capabilities grow
+
+generate_pre_appointment_brief:
+  description: >
+    Pull the FUB contact record and recent activity for contact ID
+    {contact_id}, then generate a pre-appointment brief for Ben Olsen.
+
+    The brief must include:
+    - Contact name, type (Buyer/Seller), and current stage
+    - Primary phone and email
+    - Tags (summarized, not a raw list dump)
+    - Last activity date and what it was
+    - Any upcoming appointments
+    - A 2-3 sentence "situation summary" in plain English
+    - One suggested talking point or question for Ben to open with
+
+    Format the brief so Ben can read it in 90 seconds. Use short sections
+    with clear labels. No bullet walls. No filler.
+  expected_output: >
+    A structured pre-appointment brief as plain text. Sections: Contact,
+    Stage, Last Activity, Upcoming Appointments, Situation, Opening Move.
+    Total length: under 200 words.
+  agent: brief_generator
+  context: []

@@ -1,0 +1,35 @@
+# BrightWork / Ben Olsen — FUB Runtime Config
+# Populated after Theresa completes Action Plan build in FUB UI
+
+fub_user_id: 1
+
+stages:
+  lead: 2
+  attempted_contact: 24
+  spoke_with_customer: 25
+  appointment_set: 26
+  met_with_customer: 27
+  showing_homes: 28
+  listing_agreement: 29
+  active_listing: 30
+  submitting_offers: 31
+  active_client: 12
+
+action_plans:
+  # Add IDs after Theresa creates these in FUB
+  zillow_seller: null
+  zillow_buyer: null
+  homelight: null
+  off_market_buyer: null
+  buy_before_you_sell: null
+  mcc_estimator: null
+  expired_packet: null
+  senior_workshop: null
+  quiet_listing: null
+  brightflip: null
+  final_offer: null
+  relaunch: null
+  general_buyer: null
+  agent_referral: null
+  portal_seller: null
+  portal_buyer: null

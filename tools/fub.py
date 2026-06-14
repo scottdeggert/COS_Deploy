@@ -15,6 +15,8 @@ from typing import Any
 import requests
 from requests.exceptions import HTTPError, RequestException
 
+from tools.logger import log_event
+
 BASE_URL = "https://api.followupboss.com/v1"
 ASSIGNED_TO_NAME = "Ben Olsen"
 DEFAULT_TIMEOUT = 10
@@ -102,42 +104,68 @@ def _extract_list(payload: dict, key: str) -> list[dict]:
 
 def get_contact_by_id(contact_id: str) -> dict:
     """Fetch a contact by FUB person ID."""
+    log_event("fub", "get_contact", "start", contact_id=contact_id)
     endpoint = f"/people/{contact_id}"
-    _ensure_api_key()
-    url = f"{BASE_URL}{endpoint}"
     try:
-        response = session.get(url)
-    except RequestException as exc:
-        print(f"FUB API error: GET {endpoint} — {exc}", file=sys.stderr)
-        raise
+        _ensure_api_key()
+        url = f"{BASE_URL}{endpoint}"
+        try:
+            response = session.get(url)
+        except RequestException as exc:
+            print(f"FUB API error: GET {endpoint} — {exc}", file=sys.stderr)
+            raise
 
-    if response.status_code != 200:
-        _log_http_error("GET", endpoint, response)
-        raise ValueError(
-            f"Failed to fetch contact {contact_id}: HTTP {response.status_code}"
+        if response.status_code != 200:
+            _log_http_error("GET", endpoint, response)
+            raise ValueError(
+                f"Failed to fetch contact {contact_id}: HTTP {response.status_code}"
+            )
+
+        try:
+            result = response.json()
+        except json.JSONDecodeError as exc:
+            print(
+                f"FUB API error: GET {endpoint} — invalid JSON response: {exc}",
+                file=sys.stderr,
+            )
+            raise ValueError(f"Invalid JSON from FUB API: {endpoint}") from exc
+
+        log_event("fub", "get_contact", "success", contact_id=contact_id)
+        return result
+    except Exception as e:
+        log_event(
+            "fub", "get_contact", "failure", detail=str(e), contact_id=contact_id
         )
-
-    try:
-        return response.json()
-    except json.JSONDecodeError as exc:
-        print(f"FUB API error: GET {endpoint} — invalid JSON response: {exc}", file=sys.stderr)
-        raise ValueError(f"Invalid JSON from FUB API: {endpoint}") from exc
+        raise
 
 
 def get_recent_activity(contact_id: str, limit: int = 10) -> list[dict]:
     """Fetch recent timeline events for a contact, most recent first."""
-    contact = get_contact_by_id(contact_id)
-    _require_ben_olsen(contact)
+    log_event("fub", "get_recent_activity", "start", contact_id=contact_id)
+    try:
+        contact = get_contact_by_id(contact_id)
+        _require_ben_olsen(contact)
 
-    endpoint = "/events"
-    params = {
-        "personId": contact_id,
-        "limit": limit,
-        "sort": "created",
-        "direction": "desc",
-    }
-    payload = _get_json("GET", endpoint, params=params)
-    return _extract_list(payload, "events")
+        endpoint = "/events"
+        params = {
+            "personId": contact_id,
+            "limit": limit,
+            "sort": "created",
+            "direction": "desc",
+        }
+        payload = _get_json("GET", endpoint, params=params)
+        result = _extract_list(payload, "events")
+        log_event("fub", "get_recent_activity", "success", contact_id=contact_id)
+        return result
+    except Exception as e:
+        log_event(
+            "fub",
+            "get_recent_activity",
+            "failure",
+            detail=str(e),
+            contact_id=contact_id,
+        )
+        raise
 
 
 def search_contacts(query: str, limit: int = 25) -> list[dict]:
@@ -166,13 +194,26 @@ def get_contact_by_email(email: str) -> dict | None:
 
 def get_appointments(contact_id: str) -> list[dict]:
     """Fetch appointments for a contact."""
-    contact = get_contact_by_id(contact_id)
-    _require_ben_olsen(contact)
+    log_event("fub", "get_appointments", "start", contact_id=contact_id)
+    try:
+        contact = get_contact_by_id(contact_id)
+        _require_ben_olsen(contact)
 
-    endpoint = "/appointments"
-    params = {"personId": contact_id}
-    payload = _get_json("GET", endpoint, params=params)
-    return _extract_list(payload, "appointments")
+        endpoint = "/appointments"
+        params = {"personId": contact_id}
+        payload = _get_json("GET", endpoint, params=params)
+        result = _extract_list(payload, "appointments")
+        log_event("fub", "get_appointments", "success", contact_id=contact_id)
+        return result
+    except Exception as e:
+        log_event(
+            "fub",
+            "get_appointments",
+            "failure",
+            detail=str(e),
+            contact_id=contact_id,
+        )
+        raise
 
 
 if __name__ == "__main__":

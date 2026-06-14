@@ -101,6 +101,15 @@ def _make_agent(
     return Agent(**kwargs)
 
 
+def make_llm(role: str, agents_config: dict) -> LLM:
+    model = agents_config.get(role, {}).get("model", "anthropic/claude-haiku-4-5")
+    return LLM(
+        model=model,
+        base_url="https://openrouter.ai/api/v1",
+        api_key=os.environ["OPENROUTER_API_KEY"],
+    )
+
+
 def run_brief(client_id: str, contact_id: str) -> str:
     """Load config, assemble the crew, and return a pre-appointment brief."""
     client_config = load_client_config(client_id)
@@ -109,13 +118,15 @@ def run_brief(client_id: str, contact_id: str) -> str:
     agents_config = load_yaml_config(str(CONFIG_DIR / "agents.yaml"))
     tasks_config = load_yaml_config(str(CONFIG_DIR / "tasks.yaml"))
 
-    llm = LLM(model="anthropic/claude-sonnet-4-5")
-
-    supervisor = _make_agent(agents_config["supervisor"], soul_context, llm)
+    supervisor = _make_agent(
+        agents_config["supervisor"],
+        soul_context,
+        make_llm("supervisor", agents_config),
+    )
     brief_generator = _make_agent(
         agents_config["brief_generator"],
         soul_context,
-        llm,
+        make_llm("brief_generator", agents_config),
         tools=[fub_get_contact, fub_get_activity, fub_get_appointments],
     )
 
@@ -145,3 +156,24 @@ if __name__ == "__main__":
         print("Set TEST_FUB_CONTACT_ID to run")
     else:
         print(run_brief(client_id, contact_id))
+
+
+class BrightWorkCrew:
+    """Wrapper around run_brief() for kickoff-style invocation."""
+
+    def __init__(self, client_id: str) -> None:
+        self.client_id = client_id
+
+    def kickoff(self, inputs: dict) -> str:
+        try:
+            contact_id = (inputs or {}).get("contact_id", "")
+            if not contact_id or not str(contact_id).strip():
+                return (
+                    "No contact ID provided. Provide a FUB contact ID to generate a brief."
+                )
+            return run_brief(self.client_id, str(contact_id).strip())
+        except Exception:
+            return (
+                "Unable to generate brief. Check FUB directly: "
+                "https://app.followupboss.com"
+            )

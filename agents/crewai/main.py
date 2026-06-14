@@ -1,10 +1,12 @@
 """Entry point for the BrightWork Chief of Staff CrewAI agent."""
 
-import argparse
-
 from dotenv import load_dotenv
 
-from crew import BrightWorkCrew
+load_dotenv()
+
+import argparse
+
+from crew import run_brief
 
 
 def main() -> None:
@@ -14,19 +16,26 @@ def main() -> None:
         default="ben-olsen",
         help="Client ID (maps to clients/{client_id}/)",
     )
+    parser.add_argument(
+        "--mode",
+        choices=["brief", "bot"],
+        default="bot",
+        help="Run mode: brief (one-shot) or bot (Telegram polling loop)",
+    )
+    parser.add_argument(
+        "--contact",
+        help="FUB contact ID (required when --mode brief)",
+    )
     args = parser.parse_args()
 
-    load_dotenv()
+    if args.mode == "bot":
+        from bot import run_bot
 
-    crew = BrightWorkCrew(client_id=args.client)
-
-    inputs = {
-        "contact_name": "",
-        "contact_id": "",
-        "trigger": "",
-    }
-
-    crew.kickoff(inputs)
+        run_bot(args.client)
+    else:
+        if not args.contact:
+            parser.error("--contact is required when --mode is brief")
+        print(run_brief(args.client, args.contact))
 
 
 if __name__ == "__main__":

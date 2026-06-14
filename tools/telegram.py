@@ -5,9 +5,12 @@ import sys
 
 import requests
 
+from tools.logger import log_event
+
 TELEGRAM_API = "https://api.telegram.org"
 BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
+OPERATOR_CHAT_ID = os.environ.get("OPERATOR_TELEGRAM_CHAT_ID", "")
 
 session = requests.Session()
 _original_request = session.request
@@ -39,11 +42,47 @@ def send_message(text: str, chat_id: str = None) -> bool:
         return False
 
 
-def get_updates(offset: int = 0) -> list[dict]:
-    url = f"{TELEGRAM_API}/bot{BOT_TOKEN}/getUpdates"
-    params = {"offset": offset, "timeout": 10}
+def send_operator_alert(message: str) -> None:
+    """Send a plain-text alert to the operator channel. Never raises."""
     try:
-        resp = session.get(url, params=params, timeout=15)
+        if not OPERATOR_CHAT_ID:
+            log_event(
+                "monitoring",
+                "operator_alert",
+                "fallback",
+                detail="OPERATOR_TELEGRAM_CHAT_ID not set",
+            )
+            return
+
+        url = f"{TELEGRAM_API}/bot{BOT_TOKEN}/sendMessage"
+        payload = {
+            "chat_id": OPERATOR_CHAT_ID,
+            "text": message,
+        }
+        resp = session.post(url, json=payload)
+        if resp.ok:
+            log_event("monitoring", "operator_alert", "success")
+        else:
+            log_event(
+                "monitoring",
+                "operator_alert",
+                "failure",
+                detail=f"HTTP {resp.status_code}",
+            )
+    except Exception as exc:
+        log_event(
+            "monitoring",
+            "operator_alert",
+            "failure",
+            detail=str(exc),
+        )
+
+
+def get_updates(offset: int = 0, timeout: int = 10) -> list[dict]:
+    url = f"{TELEGRAM_API}/bot{BOT_TOKEN}/getUpdates"
+    params = {"offset": offset, "timeout": timeout}
+    try:
+        resp = session.get(url, params=params, timeout=timeout + 5)
         if not resp.ok:
             print(f"getUpdates failed: {resp.status_code}", file=sys.stderr)
             return []
@@ -71,7 +110,7 @@ def extract_message(update: dict) -> dict | None:
 
 
 if __name__ == "__main__":
-    test_msg = "Scout is online. Pre-appointment brief system ready."
+    test_msg = "Chief of Staff is online. Pre-appointment brief system ready."
     success = send_message(test_msg)
     if success:
         print("Message sent successfully")

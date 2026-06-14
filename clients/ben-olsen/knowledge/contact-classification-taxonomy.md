@@ -110,6 +110,25 @@ Do not re-enroll a contact who already carries an active `Program:` sequence tag
 | `Warm 6-12 Months` | Mid-priority nurture. |
 | `Future seller` | Long-horizon seller intent. Nurture candidate, not active listing. |
 
+### MCC Estimator — Interpretation Rule
+
+MCC Estimator runs are awareness-stage behavior. A contact running valuations on one or more MCC properties is exploring options, not declaring intent to sell. Treat estimator activity as private context for Ben only — it tells him the contact is engaged and thinking, not that they are ready to transact.
+
+In briefs: surface estimator activity as background signal ("has been exploring MCC values") not as a primary intent indicator. Never frame it as evidence of a selling decision. The opening move should invite the contact to share their thinking, not reference the valuations directly. Ben should let the contact lead with their own situation.
+
+Exception: if the contact also submitted a call request on a specific property, that submission is an explicit intent signal and can be referenced. The call request is the signal. The valuation runs are the context.
+
+### Pre-Appointment Brief vs. Lead Alert — Do Not Confuse These
+
+Pre-appointment briefs are private intelligence for Ben. They summarize 
+what Ben needs to know before a conversation. They never include a 
+suggested opening line, drafted message, or anything framed as 
+something Ben should say. End the brief at Situation.
+
+Lead alerts are a separate feature triggered by new inbound contacts. 
+They include drafted first-touch messages and approval buttons. 
+Do not apply lead alert patterns to pre-appointment briefs.
+
 ### Import and data quality tags
 
 | Tag | Rule |

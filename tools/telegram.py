@@ -51,6 +51,8 @@ def send_operator_alert(message: str) -> None:
                 "operator_alert",
                 "fallback",
                 detail="OPERATOR_TELEGRAM_CHAT_ID not set",
+                file=__file__,
+                function="send_operator_alert",
             )
             return
 
@@ -61,13 +63,21 @@ def send_operator_alert(message: str) -> None:
         }
         resp = session.post(url, json=payload)
         if resp.ok:
-            log_event("monitoring", "operator_alert", "success")
+            log_event(
+                "monitoring",
+                "operator_alert",
+                "success",
+                file=__file__,
+                function="send_operator_alert",
+            )
         else:
             log_event(
                 "monitoring",
                 "operator_alert",
                 "failure",
                 detail=f"HTTP {resp.status_code}",
+                file=__file__,
+                function="send_operator_alert",
             )
     except Exception as exc:
         log_event(
@@ -75,6 +85,7 @@ def send_operator_alert(message: str) -> None:
             "operator_alert",
             "failure",
             detail=str(exc),
+            exc_info=exc,
         )
 
 

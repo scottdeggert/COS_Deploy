@@ -12,13 +12,37 @@ generate_pre_appointment_brief:
     - Last activity date and what it was
     - Any upcoming appointments
     - A 2-3 sentence "situation summary" in plain English
-    - One suggested talking point or question for Ben to open with
 
     Format the brief so Ben can read it in 90 seconds. Use short sections
     with clear labels. No bullet walls. No filler.
-  expected_output: >
-    A structured pre-appointment brief as plain text. Sections: Contact,
-    Stage, Last Activity, Upcoming Appointments, Situation, Opening Move.
-    Total length: under 200 words.
+  expected_output: |
+    A private pre-appointment brief for Ben Olsen. This is internal 
+    intelligence only — not a script, not a message to send.
+
+    Format:
+    
+    CONTACT
+    Full name, type, stage, phone, email, company/role if known.
+    
+    TAGS — WHAT THEY SIGNAL
+    Interpret the tags in plain English. What do they tell Ben about 
+    this person's situation and intent?
+    
+    LAST ACTIVITY
+    Most recent FUB activity. Frame behavioral data (website visits, 
+    estimator runs, form submissions) as context, not surveillance. 
+    "Has been actively researching MCC property values" not 
+    "ran 7 estimator sessions across 5 addresses."
+    
+    UPCOMING APPOINTMENTS
+    Any scheduled appointments from FUB. If none, say so briefly.
+    
+    SITUATION
+    2-4 sentences synthesizing what Ben needs to know walking in. 
+    What is this person trying to solve? What is the likely unlock?
+    Keep it direct. No filler.
+    
+    DO NOT include an opening move, suggested script, or any text 
+    intended for the contact. Ben decides how to open the conversation.
   agent: brief_generator
   context: []

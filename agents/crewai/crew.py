@@ -20,6 +20,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from tools.fub import get_appointments, get_contact_by_id, get_recent_activity
+from tools.logger import log_event
 
 
 @tool("Get FUB Contact by ID")
@@ -47,6 +48,7 @@ def fub_get_appointments(contact_id: str) -> str:
 
 
 CONFIG_DIR = ROOT / "agents" / "crewai" / "config"
+CLIENTS_DIR = ROOT / "clients"
 
 
 def load_yaml_config(path: str) -> dict:
@@ -83,6 +85,38 @@ def build_soul_context(soul: dict) -> str:
     return f"Your name is {name}. {personality}"
 
 
+def load_knowledge_context(client_id: str) -> str:
+    """Load brief-relevant knowledge files and return as a combined string."""
+    knowledge_dir = CLIENTS_DIR / client_id / "knowledge"
+
+    # Files to load for appointment briefs, per agent-knowledge-index.md
+    brief_files = [
+        "contact-classification-taxonomy.md",
+        "local-market-context.md",
+        "fair-housing-language.md",
+        "voice-guide.md",
+    ]
+
+    sections = []
+    for filename in brief_files:
+        filepath = knowledge_dir / filename
+        if filepath.exists():
+            content = filepath.read_text(encoding="utf-8")
+            sections.append(f"## {filename}\n\n{content}")
+        else:
+            log_event(
+                "crew",
+                "knowledge_load",
+                "warning",
+                detail=f"{filename} not found",
+                contact_id="",
+                file=__file__,
+                function="load_knowledge_context",
+            )
+
+    return "\n\n---\n\n".join(sections)
+
+
 def _make_agent(
     spec: dict, soul_context: str, llm: LLM, tools: list | None = None
 ) -> Agent:
@@ -102,7 +136,7 @@ def _make_agent(
 
 
 def make_llm(role: str, agents_config: dict) -> LLM:
-    model = agents_config.get(role, {}).get("model", "anthropic/claude-haiku-4-5")
+    model = agents_config.get(role, {}).get("model", "openrouter/anthropic/claude-haiku-4-5")
     return LLM(
         model=model,
         base_url="https://openrouter.ai/api/v1",
@@ -114,6 +148,7 @@ def run_brief(client_id: str, contact_id: str) -> str:
     """Load config, assemble the crew, and return a pre-appointment brief."""
     client_config = load_client_config(client_id)
     soul_context = build_soul_context(client_config)
+    knowledge_context = load_knowledge_context(client_id)
 
     agents_config = load_yaml_config(str(CONFIG_DIR / "agents.yaml"))
     tasks_config = load_yaml_config(str(CONFIG_DIR / "tasks.yaml"))
@@ -123,10 +158,20 @@ def run_brief(client_id: str, contact_id: str) -> str:
         soul_context,
         make_llm("supervisor", agents_config),
     )
-    brief_generator = _make_agent(
-        agents_config["brief_generator"],
-        soul_context,
-        make_llm("brief_generator", agents_config),
+    brief_spec = dict(agents_config["brief_generator"])
+    brief_spec["backstory"] = (
+        brief_spec["backstory"].replace("{soul_context}", soul_context)
+        + "\n\n## KNOWLEDGE BASE\n\n"
+        + knowledge_context
+    )
+    brief_generator = Agent(
+        role=brief_spec["role"],
+        goal=brief_spec["goal"],
+        backstory=brief_spec["backstory"],
+        llm=make_llm("brief_generator", agents_config),
+        verbose=brief_spec.get("verbose", False),
+        allow_delegation=brief_spec.get("allow_delegation", False),
+        max_iter=brief_spec.get("max_iter", 3),
         tools=[fub_get_contact, fub_get_activity, fub_get_appointments],
     )
 

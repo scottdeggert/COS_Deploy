@@ -37,8 +37,14 @@ COS_Project_Build and synced here manually when finalized.
 Requires a populated .env file. Copy .env.example and fill all values.
 
 ```bash
-# Start Telegram polling loop
+# Start Telegram polling loop (watchdog starts automatically)
 python agents/crewai/main.py --mode bot
+
+# Run log watchdog standalone (operator alerts on ERROR lines)
+python -m tools.watchdog
+
+# Preview alerts without sending Telegram
+python -m tools.watchdog --dry-run
 
 # Generate a brief directly (no Telegram)
 python agents/crewai/main.py --mode brief --contact [FUB_CONTACT_ID]
@@ -88,6 +94,19 @@ Agent errors route to a separate operator Telegram channel.
 Ben Olsen's bot interface never surfaces technical errors.
 All agent actions write to logs/cos_agent.log in structured JSON.
 The operator channel is configured via OPERATOR_TELEGRAM_CHAT_ID in .env.
+
+`tools/watchdog.py` tails `logs/cos_agent.log` continuously, classifies
+ERROR-level lines, and sends formatted alerts via `send_operator_alert()`.
+When you start the bot (`--mode bot`), watchdog launches as a background
+subprocess and restarts automatically if it crashes. Set `CLIENT_NAME` in
+`.env` to label alerts (defaults to `unknown-client`).
+
+Run watchdog standalone during development:
+
+```bash
+python -m tools.watchdog --dry-run   # print alerts to stdout
+python -m tools.watchdog             # send to operator Telegram channel
+```
 
 ---
 

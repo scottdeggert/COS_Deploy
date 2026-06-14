@@ -104,7 +104,14 @@ def _extract_list(payload: dict, key: str) -> list[dict]:
 
 def get_contact_by_id(contact_id: str) -> dict:
     """Fetch a contact by FUB person ID."""
-    log_event("fub", "get_contact", "start", contact_id=contact_id)
+    log_event(
+        "fub",
+        "get_contact",
+        "start",
+        contact_id=contact_id,
+        file=__file__,
+        function="get_contact_by_id",
+    )
     endpoint = f"/people/{contact_id}"
     try:
         _ensure_api_key()
@@ -130,18 +137,37 @@ def get_contact_by_id(contact_id: str) -> dict:
             )
             raise ValueError(f"Invalid JSON from FUB API: {endpoint}") from exc
 
-        log_event("fub", "get_contact", "success", contact_id=contact_id)
+        log_event(
+            "fub",
+            "get_contact",
+            "success",
+            contact_id=contact_id,
+            file=__file__,
+            function="get_contact_by_id",
+        )
         return result
     except Exception as e:
         log_event(
-            "fub", "get_contact", "failure", detail=str(e), contact_id=contact_id
+            "fub",
+            "get_contact",
+            "failure",
+            detail=str(e),
+            contact_id=contact_id,
+            exc_info=e,
         )
         raise
 
 
 def get_recent_activity(contact_id: str, limit: int = 10) -> list[dict]:
     """Fetch recent timeline events for a contact, most recent first."""
-    log_event("fub", "get_recent_activity", "start", contact_id=contact_id)
+    log_event(
+        "fub",
+        "get_recent_activity",
+        "start",
+        contact_id=contact_id,
+        file=__file__,
+        function="get_recent_activity",
+    )
     try:
         contact = get_contact_by_id(contact_id)
         _require_ben_olsen(contact)
@@ -155,7 +181,14 @@ def get_recent_activity(contact_id: str, limit: int = 10) -> list[dict]:
         }
         payload = _get_json("GET", endpoint, params=params)
         result = _extract_list(payload, "events")
-        log_event("fub", "get_recent_activity", "success", contact_id=contact_id)
+        log_event(
+            "fub",
+            "get_recent_activity",
+            "success",
+            contact_id=contact_id,
+            file=__file__,
+            function="get_recent_activity",
+        )
         return result
     except Exception as e:
         log_event(
@@ -164,6 +197,7 @@ def get_recent_activity(contact_id: str, limit: int = 10) -> list[dict]:
             "failure",
             detail=str(e),
             contact_id=contact_id,
+            exc_info=e,
         )
         raise
 
@@ -194,7 +228,14 @@ def get_contact_by_email(email: str) -> dict | None:
 
 def get_appointments(contact_id: str) -> list[dict]:
     """Fetch appointments for a contact."""
-    log_event("fub", "get_appointments", "start", contact_id=contact_id)
+    log_event(
+        "fub",
+        "get_appointments",
+        "start",
+        contact_id=contact_id,
+        file=__file__,
+        function="get_appointments",
+    )
     try:
         contact = get_contact_by_id(contact_id)
         _require_ben_olsen(contact)
@@ -203,7 +244,14 @@ def get_appointments(contact_id: str) -> list[dict]:
         params = {"personId": contact_id}
         payload = _get_json("GET", endpoint, params=params)
         result = _extract_list(payload, "appointments")
-        log_event("fub", "get_appointments", "success", contact_id=contact_id)
+        log_event(
+            "fub",
+            "get_appointments",
+            "success",
+            contact_id=contact_id,
+            file=__file__,
+            function="get_appointments",
+        )
         return result
     except Exception as e:
         log_event(
@@ -212,6 +260,7 @@ def get_appointments(contact_id: str) -> list[dict]:
             "failure",
             detail=str(e),
             contact_id=contact_id,
+            exc_info=e,
         )
         raise
 

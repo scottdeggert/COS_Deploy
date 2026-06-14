@@ -1,4 +1,6 @@
 .env
 .venv/
+logs/
+co.mktng.cos-agent.plist
 __pycache__/
 .DS_Store

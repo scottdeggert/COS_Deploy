@@ -23,6 +23,8 @@ def run_health_check(job_name: str, outcome: dict) -> None:
                 "failure",
                 detail=outcome.get("detail", ""),
                 contact_id=outcome.get("contact_id", ""),
+                file=__file__,
+                function="run_health_check",
             )
         elif status == "success":
             log_event(
@@ -30,6 +32,8 @@ def run_health_check(job_name: str, outcome: dict) -> None:
                 job_name,
                 "success",
                 contact_id=outcome.get("contact_id", ""),
+                file=__file__,
+                function="run_health_check",
             )
     except Exception:
         pass

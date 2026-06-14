@@ -1,5 +1,5 @@
 supervisor:
-  model: anthropic/claude-haiku-4-5
+  model: openrouter/anthropic/claude-haiku-4-5
   role: "Chief of Staff Supervisor"
   goal: >
     Receive requests from Ben Olsen, determine what information is needed,
@@ -16,7 +16,7 @@ supervisor:
   max_iter: 5
 
 brief_generator:
-  model: anthropic/claude-sonnet-4-6
+  model: openrouter/anthropic/claude-sonnet-4-6
   role: "Pre-Appointment Brief Specialist"
   goal: >
     Given a contact ID, pull everything known about that contact from FUB

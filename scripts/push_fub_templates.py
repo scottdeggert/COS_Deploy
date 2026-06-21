@@ -166,7 +166,6 @@ def post_template(api_key: str, template: EmailTemplate) -> tuple[bool, str]:
         "name": template.name,
         "subject": template.subject,
         "body": template.body,
-        "isHtml": False,
     }
     credentials = base64.b64encode(f"{api_key}:".encode("utf-8")).decode("ascii")
     request = Request(

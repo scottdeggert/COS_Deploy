@@ -161,9 +161,9 @@ If you'd rather just talk it through, I'm easy to reach at (925) 255-9727.
 
 FUB auto-sends
 
-**Subject:** A few programs worth knowing about
-
 ### Seller path
+
+**Subject:** A few programs worth knowing about
 
 **Template:** `realtors/ben-olsen/sequences/templates/seller-programs-v2.html`
 
@@ -172,6 +172,8 @@ Rendered HTML email. Campaign slug: agent-referral. All links use utm_campaign=a
 Calendly CTA: https://calendly.com/ben-brightwork/selling?utm_source=fub&utm_medium=email&utm_campaign=agent-referral&utm_content=day10
 
 ### Buyer path
+
+**Subject:** A few programs worth knowing about
 
 **Template:** `realtors/ben-olsen/sequences/templates/buyer-programs-v2.html`
 

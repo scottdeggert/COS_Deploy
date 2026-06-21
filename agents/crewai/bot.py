@@ -382,3 +382,6 @@ def run_bot(client_id: str) -> None:
             file=__file__,
             function="run_bot",
         )
+
+if __name__ == "__main__":
+    run_bot("ben-olsen")

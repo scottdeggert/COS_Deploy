@@ -10,7 +10,8 @@ from __future__ import annotations
 import json
 import os
 import sys
-from typing import Any
+from datetime import datetime, timezone
+from typing import Any, TypedDict
 
 import requests
 from requests.exceptions import HTTPError, RequestException
@@ -20,8 +21,16 @@ from tools.logger import log_event
 BASE_URL = "https://api.followupboss.com/v1"
 ASSIGNED_TO_NAME = "Ben Olsen"
 DEFAULT_TIMEOUT = 10
+DISAMBIGUATION_ACTIVITY_DAYS = 90
+ACTIVE_ACTION_PLAN_STATUSES = frozenset({"running", "active"})
 
 session = requests.Session()
+
+
+class SearchContactsDisambiguationResult(TypedDict):
+    primary: dict
+    duplicates_found: list[dict]
+    disambiguation_required: bool
 
 _original_request = session.request
 
@@ -202,13 +211,169 @@ def get_recent_activity(contact_id: str, limit: int = 10) -> list[dict]:
         raise
 
 
-def search_contacts(query: str, limit: int = 25) -> list[dict]:
-    """Search contacts assigned in FUB, filtered to Ben Olsen."""
+def _normalize_person_name(first: str | None, last: str | None) -> str:
+    return " ".join(f"{first or ''} {last or ''}".split()).casefold()
+
+
+def _parse_iso_timestamp(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    normalized = value.replace("Z", "+00:00") if value.endswith("Z") else value
+    parsed = datetime.fromisoformat(normalized)
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
+def _person_display_name(person: dict) -> str:
+    return f"{person.get('firstName', '')} {person.get('lastName', '')}".strip()
+
+
+def _contact_summary(person: dict) -> dict:
+    return {
+        "id": str(person.get("id", "")),
+        "name": _person_display_name(person),
+        "lastActivity": person.get("lastActivity"),
+        "stage": str(person.get("stage") or ""),
+    }
+
+
+def _has_valid_email(person: dict) -> bool:
+    emails = person.get("emails") or []
+    if not isinstance(emails, list):
+        return False
+    for entry in emails:
+        if not isinstance(entry, dict):
+            continue
+        status = str(entry.get("status") or "").casefold()
+        value = str(entry.get("value") or entry.get("email") or "").strip()
+        if status == "valid" and value:
+            return True
+    return False
+
+
+def _list_action_plan_enrollments(contact_id: str) -> list[dict]:
+    endpoint = "/actionPlansPeople"
+    params = {"personId": contact_id, "limit": 100}
+    payload = _get_json("GET", endpoint, params=params)
+    return _extract_list(payload, "actionPlansPeople")
+
+
+def _has_active_action_plan(contact_id: str) -> bool:
+    try:
+        enrollments = _list_action_plan_enrollments(contact_id)
+    except Exception:
+        return False
+    for enrollment in enrollments:
+        status = str(enrollment.get("status") or "").casefold()
+        if status in ACTIVE_ACTION_PLAN_STATUSES:
+            return True
+    return False
+
+
+def _list_appointments_for_contact(contact_id: str) -> list[dict]:
+    endpoint = "/appointments"
+    params = {"personId": contact_id, "limit": 100}
+    payload = _get_json("GET", endpoint, params=params)
+    return _extract_list(payload, "appointments")
+
+
+def _has_upcoming_appointment(contact_id: str) -> bool:
+    try:
+        appointments = _list_appointments_for_contact(contact_id)
+    except Exception:
+        return False
+    now = datetime.now(timezone.utc)
+    for appointment in appointments:
+        start = _parse_iso_timestamp(str(appointment.get("start") or ""))
+        if start and start >= now:
+            return True
+    return False
+
+
+def _contact_disambiguation_score(person: dict) -> tuple[float, int, int, int]:
+    """Higher tuple values indicate a stronger match."""
+    last_activity = _parse_iso_timestamp(str(person.get("lastActivity") or ""))
+    activity_ts = last_activity.timestamp() if last_activity else 0.0
+    contact_id = str(person.get("id", ""))
+    return (
+        activity_ts,
+        int(_has_upcoming_appointment(contact_id)),
+        int(_has_active_action_plan(contact_id)),
+        int(_has_valid_email(person)),
+    )
+
+
+def _last_activity_within_days(person: dict, days: int) -> bool:
+    last_activity = _parse_iso_timestamp(str(person.get("lastActivity") or ""))
+    if not last_activity:
+        return False
+    elapsed = datetime.now(timezone.utc) - last_activity
+    return elapsed.days <= days
+
+
+def _duplicate_name_group(people: list[dict], query: str) -> list[dict] | None:
+    query_norm = " ".join(query.split()).casefold()
+    by_name: dict[str, list[dict]] = {}
+    for person in people:
+        key = _normalize_person_name(
+            person.get("firstName"), person.get("lastName")
+        )
+        by_name.setdefault(key, []).append(person)
+
+    if query_norm in by_name and len(by_name[query_norm]) >= 2:
+        return by_name[query_norm]
+
+    duplicate_groups = [group for group in by_name.values() if len(group) >= 2]
+    if len(duplicate_groups) == 1 and len(duplicate_groups[0]) == len(people):
+        return duplicate_groups[0]
+    return None
+
+
+def _disambiguate_duplicate_contacts(
+    people: list[dict],
+) -> SearchContactsDisambiguationResult:
+    full_records: list[dict] = []
+    for person in people:
+        contact_id = str(person.get("id", ""))
+        full_records.append(get_contact_by_id(contact_id))
+
+    ranked = sorted(full_records, key=_contact_disambiguation_score, reverse=True)
+    primary = ranked[0]
+    duplicates_found = [_contact_summary(person) for person in ranked[1:]]
+    disambiguation_required = any(
+        _last_activity_within_days(person, DISAMBIGUATION_ACTIVITY_DAYS)
+        for person in ranked
+    )
+    return {
+        "primary": primary,
+        "duplicates_found": duplicates_found,
+        "disambiguation_required": disambiguation_required,
+    }
+
+
+def search_contacts(
+    query: str, limit: int = 25
+) -> list[dict] | SearchContactsDisambiguationResult:
+    """Search contacts assigned in FUB, filtered to Ben Olsen.
+
+    Returns a list for zero/one results and for multi-match cases without
+    same-name duplicates. When two or more results share a normalized name,
+    returns a disambiguation payload with primary, duplicates_found, and
+    disambiguation_required.
+    """
     endpoint = "/people"
     params = {"q": query, "limit": limit, "assigned": "true"}
     payload = _get_json("GET", endpoint, params=params)
     people = _extract_list(payload, "people")
-    return [person for person in people if _assigned_to_name(person) == ASSIGNED_TO_NAME]
+    filtered = [
+        person for person in people if _assigned_to_name(person) == ASSIGNED_TO_NAME
+    ]
+
+    duplicate_group = _duplicate_name_group(filtered, query)
+    if duplicate_group and len(duplicate_group) >= 2:
+        return _disambiguate_duplicate_contacts(duplicate_group)
+    return filtered
 
 
 def get_contact_by_email(email: str) -> dict | None:

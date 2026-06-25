@@ -24,12 +24,31 @@ def _request_with_timeout(method: str, url: str, **kwargs) -> requests.Response:
 session.request = _request_with_timeout  # type: ignore[method-assign]
 
 
-def send_message(text: str, chat_id: str = None) -> bool:
+def send_message(text: str, chat_id: str = None, parse_mode: str | None = None) -> bool:
     url = f"{TELEGRAM_API}/bot{BOT_TOKEN}/sendMessage"
     payload = {
         "chat_id": chat_id or CHAT_ID,
         "text": text,
-        "parse_mode": "Markdown",
+    }
+    if parse_mode is not None:
+        payload["parse_mode"] = parse_mode
+    try:
+        resp = session.post(url, json=payload)
+        if resp.ok:
+            return True
+        print(f"sendMessage failed: {resp.status_code}", file=sys.stderr)
+        return False
+    except requests.RequestException as exc:
+        print(f"sendMessage error: {exc}", file=sys.stderr)
+        return False
+
+
+def send_inline_message(text: str, reply_markup: dict, chat_id: str = None) -> bool:
+    url = f"{TELEGRAM_API}/bot{BOT_TOKEN}/sendMessage"
+    payload = {
+        "chat_id": chat_id or CHAT_ID,
+        "text": text,
+        "reply_markup": reply_markup,
     }
     try:
         resp = session.post(url, json=payload)

@@ -4,3 +4,8 @@ logs/
 co.mktng.cos-agent.plist
 __pycache__/
 .DS_Store
+*.pyc
+*.pyo
+*.db
+*.log
+AGENT_SNAPSHOT.md

@@ -25,17 +25,33 @@ Tags are supplementary signals. If a tag contradicts a structured field, the str
 
 ## FUB Stage Definitions
 
-FUB may also use intent-specific entry stages (`New Buyer Lead`, `New Seller Lead`). Treat these as subtypes of **New Lead** for routing purposes.
+FUB may also use intent-specific entry stages (`New Buyer Lead`, `New Seller Lead`). Treat these as subtypes of **Lead** for routing purposes.
+
+Use exact stage string values as they appear in Ben's FUB account (verified June 25, 2026).
 
 | Stage | Meaning | Agent behavior |
 |---|---|---|
-| **New Lead** | Just arrived, no contact yet | Priority: trigger or confirm Day 0 sequence enrollment |
-| **Attempted Contact** | Outreach sent, no response | Monitor for re-engagement signals; do not duplicate Day 0 |
-| **Active** | Two-way communication established | Brief mode: know this person; pause or exit active sequences per exit conditions |
-| **Under Contract** | Transaction in progress | Defer to SkySlope/Dotloop; no sequence contact |
-| **Closed** | Transaction complete | Monitor for referral signals and anniversary dates; nurture only with Ben instruction |
-| **Nurture** | Long-horizon contact, active but not transacting | Sequence enrollment appropriate when source/tags warrant |
-| **Inactive / Dead** | No activity, no response over extended period | Do not initiate outreach without Ben instruction |
+| **Lead** | Just arrived, no contact yet | Confirm assignedTo before any action. High volume — filter by lastActivity before surfacing. Priority: trigger or confirm Day 0 sequence enrollment |
+| **Attempted contact** | Outreach sent, no response | Monitor for re-engagement signals; do not duplicate Day 0 |
+| **Spoke with customer** | Two-way communication established | Brief mode eligible; pause or exit active sequences per exit conditions |
+| **Appointment set** | Appointment scheduled | Flag for pre-appointment brief |
+| **Met with customer** | Consultation completed | Monitor next step |
+| **Showing homes** | Active buyer | Do not interrupt with nurture sequences |
+| **Listing agreement** | Listing signed | Transaction mode; no sequence contact |
+| **Active listing** | Home on market | Do not sequence |
+| **Submitting offers** | Offer in progress | Transaction mode; no sequence contact |
+| **Active Client** | Actively working relationship | Brief mode; confirm whether an active sequence should continue or exit |
+| **Nurture** | Active nurture contact | Sequence enrollment appropriate when source/tags warrant |
+| **Nurture 6m+** | Long-horizon contact | Low-frequency contact |
+| **Warm 3-6m** | Active nurture segment | Sequence appropriate |
+| **Hot Prospect 0-3m** | High priority prospect | Surface in morning digest |
+| **Pending** | Transaction pending | Defer to SkySlope/Dotloop; no sequence contact |
+| **Past Client** | Prior closed transaction with Ben | No outreach; monitor for referral signals. Re-engage via sphere track |
+| **Sphere** | Referral sources, past clients, neighbors | No auto-sequence without Ben approval |
+| **Unresponsive** | No response over extended period | Suppress outreach; flag for Ben review |
+| **Closed** | Closed transactions | No outreach; monitor for anniversary and referral triggers |
+| **Non Client** | Not a client contact | No outreach without Ben instruction |
+| **Trash** | Disqualified / junk | Suppress all operations |
 
 **Engagement milestones** (used as sequence exit conditions, not primary pipeline stages): Engaged, Listing Appointment, Active Seller, Showing, Active Buyer. When a contact reaches any of these, active pursuit sequences should pause or hand off to nurture per sequence rules.
 
@@ -175,9 +191,10 @@ Plain-English logic the agent follows for every contact:
 5. **Check active tags.** Do any program tags override source-based routing? Program tags take precedence over generic source when both are present and aligned with `type`.
 
 6. **Check `stage`.** Is this contact in a state where sequence enrollment is appropriate?
-   - Enroll: New Lead, Attempted Contact (if sequence not yet started), Nurture
-   - Do not enroll: Under Contract, Closed, Inactive / Dead
-   - Active: brief mode; confirm whether an active sequence should continue or exit
+   - Enroll: Lead, Attempted contact (if sequence not yet started), Nurture, Warm 3-6m, Nurture 6m+
+   - Do not enroll: Pending, Listing agreement, Active listing, Submitting offers, Closed, Unresponsive, Trash, Non Client
+   - Sphere: no auto-sequence without Ben approval
+   - Brief mode: Spoke with customer, Appointment set, Met with customer, Showing homes, Active Client, Hot Prospect 0-3m
 
 7. **Check `#HitList`.** If present, stop. Flag for direct Ben action only. No automated sequences.
 

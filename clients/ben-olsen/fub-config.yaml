@@ -14,21 +14,39 @@ stages:
   active_listing: 30
   submitting_offers: 31
   active_client: 12
+  under_contract: 32
+  nurture: 33
+  nurture_6m_plus: 4
+  warm_3_6m: 22
+  hot_prospect_0_3m: 3
+  pending: 7
+  past_client: 9
+  sphere: 10
+  unresponsive: 13
+  closed: 8
+  non_client: 23
+  trash: 11
+
+# Closed People stage ID confirmed. Note: post-close workflow should
+# trigger from dealsUpdated webhook (Deals pipeline), not
+# peopleStageUpdated. peopleStageUpdated on stage 8 is a secondary
+# signal only — Ben does not consistently move contacts here after
+# closing a Deal.
+closed_stage_ids: [8]
 
 action_plans:
-  # Add IDs after Theresa creates these in FUB
   zillow_seller: null
   zillow_buyer: null
-  homelight: null
-  off_market_buyer: null
-  buy_before_you_sell: null
-  mcc_estimator: null
-  expired_packet: null
-  senior_workshop: null
-  quiet_listing: null
-  brightflip: null
-  final_offer: null
-  relaunch: null
+  homelight: 49
+  off_market_buyer: 55
+  buy_before_you_sell: 56
+  mcc_estimator: 50
+  expired_packet: 58
+  senior_workshop: 57
+  quiet_listing: 51
+  brightflip: 52
+  final_offer: 53
+  relaunch: 54
   general_buyer: null
   agent_referral: null
   portal_seller: null

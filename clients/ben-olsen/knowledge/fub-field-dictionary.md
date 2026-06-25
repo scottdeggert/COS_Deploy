@@ -36,35 +36,55 @@ reads these first, before tags.
 
 ## PIPELINE STAGES
 
-These are the actual stage names and IDs in Ben's FUB account.
-Use the exact string values when reading or writing the `stage` field.
+Verified live from Ben Olsen's FUB account, June 25, 2026.
+Use exact string values when reading or writing the `stage` field.
 
-| ID | Stage Name | Protected | People Count | Agent Behavior |
-|---|---|---|---|---|
-| 2 | Lead | Yes | 19,439 | New arrival. Confirm sequence enrollment. |
-| 24 | Attempted contact | Yes | 126 | Outreach sent, no response. Monitor for re-engagement. |
-| 25 | Spoke with customer | Yes | 427 | Two-way contact established. Brief mode. |
-| 26 | Appointment set | Yes | 151 | Appointment exists. Flag for pre-appointment brief. |
-| 27 | Met with customer | Yes | 101 | Consultation completed. Monitor next step. |
-| 28 | Showing homes | Yes | 99 | Active buyer. Do not interrupt with nurture sequences. |
-| 29 | Listing agreement | Yes | 0 | Listing signed. Transaction mode. |
-| 30 | Active listing | Yes | 0 | Home on market. Do not sequence. |
-| 31 | Submitting offers | Yes | 3 | Offer in progress. Transaction mode. |
-| 12 | Active Client | No | 12 | Ben's custom stage. Actively working relationship. |
+### API-Confirmed Stage IDs
 
-Additional stages confirmed in live contact data (not returned in
-stages API — likely custom/legacy):
+| ID | Stage Name | People Count | Agent Behavior |
+|---|---|---|---|
+| 2 | Lead | 19,452 | New arrival. Confirm assignedTo before any action. High volume — filter by lastActivity before surfacing. |
+| 24 | Attempted contact | 126 | Outreach sent, no response. Monitor for re-engagement. |
+| 25 | Spoke with customer | 427 | Two-way contact established. Brief mode eligible. |
+| 26 | Appointment set | 151 | Appointment exists. Flag for pre-appointment brief. |
+| 27 | Met with customer | 101 | Consultation completed. Monitor next step. |
+| 28 | Showing homes | 99 | Active buyer. Do not interrupt with nurture sequences. |
+| 29 | Listing agreement | 0 | Listing signed. Transaction mode. |
+| 30 | Active listing | 0 | Home on market. Do not sequence. |
+| 31 | Submitting offers | 3 | Offer in progress. Transaction mode. |
+| 12 | Active Client | 12 | Actively working relationship. |
 
-| Stage Name | Observed In | Agent Behavior |
+### Stage IDs Pending (stages exist in account, IDs not yet pulled)
+
+Run `GET /v1/stages?limit=50` to resolve these before building write logic.
+
+| Stage Name | People Count | Agent Behavior |
 |---|---|---|
-| Closed | Past transactions | No outreach. Monitor for referral signals. |
-| Warm 3-6m | Nurture contacts | Active nurture. Sequence appropriate. |
-| Nurture 6m+ | Long-horizon contacts | Light nurture. Low frequency. |
+| Nurture | 153 | Active nurture. Sequence appropriate. |
+| Nurture 6m+ | 12 | Long-horizon. Low-frequency contact. |
+| Warm 3-6m | 11 | Active nurture. Sequence appropriate. |
+| Hot Prospect 0-3m | 6 | High priority. Surface in morning digest. |
+| Pending | 2 | Transaction pending. Do not sequence. |
+| Past Client | 6 | No outreach. Monitor for referral signals. Re-engage via sphere track. |
+| Sphere | 5,656 | Largest meaningful segment. Referral sources, past clients, neighbors. No auto-sequence without Ben approval. |
+| Unresponsive | 3 | Suppress outreach. Flag for Ben review. |
+| Closed | 71 | No outreach. Closed transactions. Monitor for anniversary and referral triggers. |
+| Non Client | 47 | No outreach without Ben instruction. |
+| Trash | 3,083 | Suppress all operations. |
 
-Note: Total API-reported stages = 22. Only 10 returned in current
-MCP pagination. The three above were confirmed from live contact
-records. A full stage pull should be completed when the FUB MCP
-pagination issue is resolved.
+### Important Notes
+
+- "Lead" (19,452) contains the Chime import dump. Do not treat as
+  uniformly hot. Filter by lastActivity and source before surfacing.
+- "Sphere" (5,656) is the largest active segment and the primary
+  re-engagement opportunity. No sequence enrollment without explicit
+  Ben approval.
+- "Past Client" (6) is severely underpopulated relative to closed
+  Deals count (85+ transactions). Past clients are likely sitting in
+  Sphere or at their last active stage. This is a data hygiene gap.
+- Closed transaction trigger must use Deals pipeline stage changes
+  (dealsUpdated webhook), NOT peopleStageUpdated. Ben does not
+  consistently move contacts to the "Closed" People stage.
 
 ---
 

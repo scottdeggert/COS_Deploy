@@ -2,23 +2,45 @@
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import subprocess
 import sys
 import threading
 import time
+from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 ROOT = Path(__file__).resolve().parent.parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from crew import run_brief
-from tools.fub import get_contact_by_id, search_contacts
+from tools.fub import (
+    SearchContactsDisambiguationResult,
+    _contact_summary,
+    _person_display_name,
+    get_contact_by_id,
+    search_contacts,
+)
+from tools.fub_write import add_note_to_contact, enroll_in_action_plan
 from tools.health import run_health_check
 from tools.logger import log_event
-from tools.telegram import CHAT_ID, extract_message, get_updates, send_message, send_operator_alert
+from tools.telegram import (
+    BOT_TOKEN,
+    CHAT_ID,
+    TELEGRAM_API,
+    extract_message,
+    get_updates,
+    send_inline_message,
+    send_message,
+    send_operator_alert,
+    session as telegram_session,
+)
+
+LEAD_ALERT_STATE_PATH = ROOT / "logs" / "lead_alert_state.json"
 
 BRIEF_ID_PATTERN = re.compile(r"^(?:/)?brief\s+(\d+)$", re.IGNORECASE)
 BRIEF_NAME_PATTERN = re.compile(
@@ -128,7 +150,341 @@ def startup_check() -> None:
     )
 
 
-def _handle_message(client_id: str, text: str) -> str:
+def _load_lead_alert_state() -> dict[str, Any]:
+    if not LEAD_ALERT_STATE_PATH.exists():
+        return {"drafts": {}, "contacts": {}, "responded": []}
+    try:
+        with LEAD_ALERT_STATE_PATH.open(encoding="utf-8") as handle:
+            return json.load(handle)
+    except (json.JSONDecodeError, OSError):
+        return {"drafts": {}, "contacts": {}, "responded": []}
+
+
+def _save_lead_alert_state(state: dict[str, Any]) -> None:
+    LEAD_ALERT_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with LEAD_ALERT_STATE_PATH.open("w", encoding="utf-8") as handle:
+        json.dump(state, handle)
+
+
+def _get_lead_draft(contact_id: str) -> tuple[str, str]:
+    state = _load_lead_alert_state()
+    draft = state.get("drafts", {}).get(contact_id, {})
+    if isinstance(draft, dict):
+        return draft.get("draft_email", ""), draft.get("draft_subject", "")
+    return str(draft), ""
+
+
+def _get_lead_contact(contact_id: str) -> dict[str, str]:
+    state = _load_lead_alert_state()
+    contact = state.get("contacts", {}).get(contact_id, {})
+    if contact:
+        return contact
+    person = get_contact_by_id(contact_id)
+    phones = person.get("phones") or []
+    phone = ""
+    if isinstance(phones, list) and phones:
+        value = phones[0].get("value") if isinstance(phones[0], dict) else phones[0]
+        phone = str(value or "")
+    return {
+        "first_name": str(person.get("firstName", "")),
+        "last_name": str(person.get("lastName", "")),
+        "phone": phone,
+        "source": str(person.get("source", "")),
+    }
+
+
+def _mark_lead_responded(contact_id: str) -> None:
+    state = _load_lead_alert_state()
+    responded = state.setdefault("responded", [])
+    if contact_id not in responded:
+        responded.append(contact_id)
+    _save_lead_alert_state(state)
+
+
+def _answer_callback_query(callback_query_id: str) -> None:
+    if not callback_query_id:
+        return
+    url = f"{TELEGRAM_API}/bot{BOT_TOKEN}/answerCallbackQuery"
+    payload = {"callback_query_id": callback_query_id}
+    try:
+        telegram_session.post(url, json=payload, timeout=10)
+    except Exception:
+        pass
+
+
+def _drain_stale_updates() -> int:
+    """Acknowledge queued updates on startup without executing callbacks or sends."""
+    offset = 0
+    while True:
+        updates = get_updates(offset=offset, timeout=0)
+        if not updates:
+            break
+        for update in updates:
+            offset = update.get("update_id", 0) + 1
+            callback_query = update.get("callback_query")
+            if callback_query:
+                _answer_callback_query(callback_query.get("id", ""))
+    return offset
+
+
+def _handle_callback(client_id: str, callback_query: dict) -> None:
+    """Route inline keyboard actions for lead alert cards."""
+    data = callback_query.get("data", "")
+    message = callback_query.get("message", {})
+    chat = message.get("chat", {})
+    chat_id = str(chat.get("id", ""))
+
+    if not data or ":" not in data:
+        return
+
+    action, contact_id = data.split(":", 1)
+    contact_info = _get_lead_contact(contact_id)
+    first_name = contact_info.get("first_name", "")
+    action_plan_id = contact_info.get("action_plan_id")
+
+    if action == "approve":
+        if action_plan_id:
+            try:
+                enroll_in_action_plan(contact_id, int(action_plan_id))
+            except Exception as exc:
+                log_event(
+                    "lead_alert",
+                    "approve",
+                    "failure",
+                    detail=str(exc),
+                    contact_id=contact_id,
+                    exc_info=exc,
+                    file=__file__,
+                    function="_handle_callback",
+                )
+                send_message(
+                    "Action plan enrollment failed. Check FUB manually.",
+                    chat_id=chat_id,
+                )
+                return
+            send_message(
+                f"Sequence started for {first_name}. FUB will send Day 1 email.",
+                chat_id=chat_id,
+            )
+            add_note_to_contact(
+                contact_id,
+                "Lead Alert: Ben approved. Action plan enrolled by CoS agent.",
+            )
+            _mark_lead_responded(contact_id)
+        else:
+            send_message(
+                "No sequence mapped for this lead source. Check FUB manually.",
+                chat_id=chat_id,
+            )
+            add_note_to_contact(
+                contact_id,
+                "Lead Alert: Ben approved but no action plan mapped for source.",
+            )
+        log_event(
+            "lead_alert",
+            "approve",
+            "success",
+            contact_id=contact_id,
+            file=__file__,
+            function="_handle_callback",
+        )
+        return
+
+    if action == "brief_pick":
+        try:
+            result = _run_brief_for_contact(client_id, contact_id)
+            send_message(result, chat_id=chat_id)
+        except Exception as exc:
+            log_event(
+                "bot",
+                "brief_pick",
+                "failure",
+                detail=str(exc),
+                contact_id=contact_id,
+                exc_info=exc,
+                file=__file__,
+                function="_handle_callback",
+            )
+            send_message(BRIEF_ERROR_MSG, chat_id=chat_id)
+        else:
+            log_event(
+                "bot",
+                "brief_pick",
+                "success",
+                contact_id=contact_id,
+                file=__file__,
+                function="_handle_callback",
+            )
+        return
+
+    if action == "call":
+        phone = contact_info.get("phone", "")
+        phone_digits = re.sub(r"\D", "", phone)
+        send_message(
+            f"Call {first_name} — tap to dial:\n+1{phone_digits}",
+            chat_id=chat_id,
+        )
+        add_note_to_contact(contact_id, "Lead Alert: Ben tapped CALL.")
+        _mark_lead_responded(contact_id)
+        log_event(
+            "lead_alert",
+            "call",
+            "success",
+            contact_id=contact_id,
+            file=__file__,
+            function="_handle_callback",
+        )
+        return
+
+
+def _parse_iso_timestamp(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    normalized = value.replace("Z", "+00:00") if value.endswith("Z") else value
+    parsed = datetime.fromisoformat(normalized)
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
+def _format_last_activity(last_activity: str | None) -> str:
+    parsed = _parse_iso_timestamp(str(last_activity or ""))
+    if not parsed:
+        return "no activity"
+    return parsed.date().isoformat()
+
+
+def _run_brief_for_contact(client_id: str, contact_id: str) -> str:
+    log_event(
+        "cos_agent",
+        "run_brief",
+        "start",
+        contact_id=contact_id,
+        file=__file__,
+        function="_run_brief_for_contact",
+    )
+    try:
+        result = run_brief(client_id, contact_id)
+        log_event(
+            "cos_agent",
+            "run_brief",
+            "success",
+            contact_id=contact_id,
+            file=__file__,
+            function="_run_brief_for_contact",
+        )
+        run_health_check(
+            "brief",
+            {
+                "status": "success",
+                "agent": "brief_generator",
+                "action": "generate_brief",
+                "contact_id": contact_id,
+            },
+        )
+        return result
+    except Exception as exc:
+        run_health_check(
+            "brief",
+            {
+                "status": "failure",
+                "agent": "brief_generator",
+                "action": "generate_brief",
+                "detail": str(exc),
+                "contact_id": contact_id,
+            },
+        )
+        log_event(
+            "cos_agent",
+            "run_brief",
+            "failure",
+            detail=str(exc),
+            contact_id=contact_id,
+            exc_info=exc,
+            file=__file__,
+            function="_run_brief_for_contact",
+        )
+        return BRIEF_ERROR_MSG
+
+
+def _duplicate_merge_note(name: str, total_records: int) -> str:
+    return (
+        f"\n\nFound {total_records} records for {name}. "
+        "Showing the most recent. Theresa can merge them in FUB."
+    )
+
+
+def _send_contact_disambiguation_prompt(
+    chat_id: str, name: str, candidates: list[dict]
+) -> None:
+    buttons = []
+    for candidate in candidates:
+        contact_id = str(candidate.get("id", ""))
+        stage = str(candidate.get("stage") or "Unknown")
+        activity = _format_last_activity(candidate.get("lastActivity"))
+        label = f"{candidate.get('name', name)} · {activity} · {stage}"
+        if len(label) > 64:
+            label = label[:61] + "..."
+        buttons.append(
+            [{"text": label, "callback_data": f"brief_pick:{contact_id}"}]
+        )
+
+    prompt = f"Found {len(candidates)} records for {name}. Which one?"
+    send_inline_message(
+        prompt,
+        {"inline_keyboard": buttons},
+        chat_id=chat_id,
+    )
+
+
+def _handle_disambiguation_result(
+    client_id: str,
+    chat_id: str,
+    query: str,
+    result: SearchContactsDisambiguationResult,
+) -> str | None:
+    primary = result["primary"]
+    duplicates_found = result["duplicates_found"]
+    contact_id = str(primary.get("id", ""))
+    name = _person_display_name(primary) or query
+
+    if result["disambiguation_required"]:
+        candidates = [_contact_summary(primary), *duplicates_found]
+        _send_contact_disambiguation_prompt(chat_id, name, candidates)
+        log_event(
+            "bot",
+            "name_lookup",
+            "success",
+            detail=f"{name} disambiguation prompt sent",
+            file=__file__,
+            function="_handle_disambiguation_result",
+        )
+        return None
+
+    log_event(
+        "bot",
+        "name_lookup",
+        "success",
+        detail=f"{name} → {contact_id} (auto-disambiguated)",
+        file=__file__,
+        function="_handle_disambiguation_result",
+    )
+    log_event(
+        "bot",
+        "brief_requested",
+        "start",
+        contact_id=contact_id,
+        file=__file__,
+        function="_handle_disambiguation_result",
+    )
+    brief = _run_brief_for_contact(client_id, contact_id)
+    if duplicates_found:
+        total_records = 1 + len(duplicates_found)
+        brief += _duplicate_merge_note(name, total_records)
+    return brief
+
+
+def _handle_message(client_id: str, text: str, chat_id: str) -> str | None:
     if GREETING_PATTERN.match(text.strip()):
         return GREETING_REPLY
 
@@ -157,36 +513,8 @@ def _handle_message(client_id: str, text: str) -> str:
             function="_handle_message",
         )
         try:
-            result = run_brief(client_id, contact_id)
-            log_event(
-                "cos_agent",
-                "run_brief",
-                "success",
-                contact_id=contact_id,
-                file=__file__,
-                function="_handle_message",
-            )
-            run_health_check(
-                "brief",
-                {
-                    "status": "success",
-                    "agent": "brief_generator",
-                    "action": "generate_brief",
-                    "contact_id": contact_id,
-                },
-            )
-            return result
+            return _run_brief_for_contact(client_id, contact_id)
         except Exception as exc:
-            run_health_check(
-                "brief",
-                {
-                    "status": "failure",
-                    "agent": "brief_generator",
-                    "action": "generate_brief",
-                    "detail": str(exc),
-                    "contact_id": contact_id,
-                },
-            )
             log_event(
                 "cos_agent",
                 "run_brief",
@@ -194,6 +522,8 @@ def _handle_message(client_id: str, text: str) -> str:
                 detail=str(exc),
                 contact_id=contact_id,
                 exc_info=exc,
+                file=__file__,
+                function="_handle_message",
             )
             return BRIEF_ERROR_MSG
 
@@ -209,6 +539,8 @@ def _handle_message(client_id: str, text: str) -> str:
             function="_handle_message",
         )
         results = search_contacts(query, limit=5)
+        if isinstance(results, dict):
+            return _handle_disambiguation_result(client_id, chat_id, query, results)
         if not results:
             return f"No contact found for '{query}'. Check the name or use a contact ID."
         if len(results) > 1:
@@ -246,16 +578,7 @@ def _handle_message(client_id: str, text: str) -> str:
             function="_handle_message",
         )
         try:
-            result = run_brief(client_id, contact_id)
-            log_event(
-                "cos_agent",
-                "run_brief",
-                "success",
-                contact_id=contact_id,
-                file=__file__,
-                function="_handle_message",
-            )
-            return result
+            return _run_brief_for_contact(client_id, contact_id)
         except Exception as exc:
             log_event(
                 "cos_agent",
@@ -264,6 +587,8 @@ def _handle_message(client_id: str, text: str) -> str:
                 detail=str(exc),
                 contact_id=contact_id,
                 exc_info=exc,
+                file=__file__,
+                function="_handle_message",
             )
             return BRIEF_ERROR_MSG
 
@@ -323,7 +648,7 @@ def run_bot(client_id: str) -> None:
         function="run_bot",
     )
 
-    offset = 0
+    offset = _drain_stale_updates()
     configured_chat_id = str(CHAT_ID)
 
     try:
@@ -334,36 +659,44 @@ def run_bot(client_id: str) -> None:
                 offset = update_id + 1
 
                 message = extract_message(update)
-                if not message:
-                    continue
+                if message:
+                    chat_id = message["chat_id"]
+                    if chat_id == configured_chat_id:
+                        text = message["text"]
+                        log_event(
+                            "telegram",
+                            "inbound",
+                            "success",
+                            detail=text,
+                            contact_id="",
+                            file=__file__,
+                            function="run_bot",
+                        )
 
-                chat_id = message["chat_id"]
-                if chat_id != configured_chat_id:
-                    continue
+                        reply = _handle_message(client_id, text, chat_id=chat_id)
+                        if reply is not None:
+                            send_message(reply, chat_id=chat_id)
+                            log_event(
+                                "telegram",
+                                "outbound",
+                                "success",
+                                detail=reply[:200],
+                                contact_id="",
+                                file=__file__,
+                                function="run_bot",
+                            )
 
-                text = message["text"]
-                log_event(
-                    "telegram",
-                    "inbound",
-                    "success",
-                    detail=text,
-                    contact_id="",
-                    file=__file__,
-                    function="run_bot",
-                )
-
-                reply = _handle_message(client_id, text)
-
-                send_message(reply, chat_id=chat_id)
-                log_event(
-                    "telegram",
-                    "outbound",
-                    "success",
-                    detail=reply[:200],
-                    contact_id="",
-                    file=__file__,
-                    function="run_bot",
-                )
+                callback_query = update.get("callback_query")
+                if callback_query:
+                    callback_query_id = callback_query.get("id", "")
+                    _answer_callback_query(callback_query_id)
+                    callback_chat_id = str(
+                        callback_query.get("message", {})
+                        .get("chat", {})
+                        .get("id", "")
+                    )
+                    if callback_chat_id == configured_chat_id:
+                        _handle_callback(client_id, callback_query)
     except KeyboardInterrupt:
         log_event(
             "cos_agent",

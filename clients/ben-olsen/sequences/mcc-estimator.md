@@ -10,35 +10,37 @@ Optional: Ben may choose to call at his discretion. No call tasks in this sequen
 
 ---
 
+<!-- CALENDLY BUTTON SPEC
+Label: Meet with Ben
+Background: #00aedb
+Text color: #ffffff
+Padding: 14px 32px
+Border-radius: 3px
+Font: Arial, sans-serif, 15px, bold
+URL pattern: https://calendly.com/ben-brightwork/selling?utm_source=fub&utm_medium=email&utm_campaign=mcc-estimator&utm_content=day{N}
+-->
+
+
 | Step | Day | Channel | Executed by | Purpose |
 |------|-----|---------|-------------|---------|
-| 1 | 0 | Email | CoS drafts, Ben approves via Telegram [TELEGRAM APPROVAL REQUIRED - PATH A / FUB AUTO - PATH B] | Warm, neighborly acknowledgment of the floor plan tool |
+| 1 | 1 | Email | CoS drafts, Ben approves via Telegram [TELEGRAM APPROVAL REQUIRED - PATH A / FUB AUTO - PATH B] | Warm, neighborly acknowledgment of the floor plan tool |
 | 2 | 3 | Email | FUB auto | MCC market context, genuinely useful |
 | 3 | 10 | Email (HTML) | FUB auto | Program overview, low pressure |
 | 4 | 30 | Email | FUB auto | Transition to quarterly market updates |
 
 ---
 
-## Step 1 — Day 0 Email
+## Step 1 — Day 1 Email
+FUB auto-sends
+Pause-on-response: ON
 
-**Path A:** CoS drafts and sends via Telegram approval workflow. FUB auto-fallback after 30 minutes if no response.
-**Path B:** FUB sends automatically on enrollment. CoS draft injected before enrollment. Telegram notification is informational only.
+Subject: Your Moraga Country Club question
 
-**Pause-on-response:** ON
+Hi %contact_first_name%,
 
-**Subject:** That floor plan tool on the MCC site
+I've been working in Moraga Country Club since 2004. It's its own market within a market. Floor plan, condition, and where you sit on the course all move the number in ways the online estimates miss.
 
-**Body:**
-
-Hi [first name],
-
-I saw you used the floor plan valuation tool on moragacountryclubrealestate.com. It's a good one. The site matches your home to one of the club's twelve known floor plans and runs the numbers from there, which gets you a much sharper estimate than Zillow can. Zillow doesn't know which plan you're in, let alone how yours is actually configured.
-
-I've lived in Lamorinda my whole life and I've been a member at Moraga Country Club for a long time. I love this community, and I'm glad people are using a tool that was built for it. A lot of homeowners run the numbers just to see where they stand. That's a perfectly normal thing to do.
-
-No need to do anything with this email. I just wanted to say hello from a neighbor who happens to work in real estate.
-
-If you ever want to talk real estate, I'm easy to find.
+If you're thinking about what's next for your home, I'm happy to give you a real picture. I'll reach out. Feel free to reply anytime.
 
 ---
 
@@ -50,7 +52,7 @@ If you ever want to talk real estate, I'm easy to find.
 
 **Body:**
 
-Hi [first name],
+Hi %contact_first_name%,
 
 I thought I'd share a few things about the MCC market that the valuation tool can't tell you on its own. Might be useful whether you're just curious or keeping an eye on things over time.
 
@@ -63,7 +65,13 @@ The other thing buyers look for here is discretion. A lot of MCC homeowners valu
 None of this is urgent. It's just context I pay attention to as someone who's been in and around this community for a long time.
 
 If you ever want to dig into any of it, I'm around:
-https://calendly.com/ben-brightwork/selling?utm_source=fub&utm_medium=email&utm_campaign=mcc-estimator&utm_content=day3
+<table cellpadding="0" cellspacing="0" role="presentation" style="margin-top:24px;margin-bottom:8px;">
+  <tr>
+    <td style="background-color:#00aedb;border-radius:3px;">
+      <a href="https://calendly.com/ben-brightwork/selling?utm_source=fub&utm_medium=email&utm_campaign=mcc-estimator&utm_content=day3" style="display:inline-block;color:#ffffff;font-family:Arial,sans-serif;font-size:15px;font-weight:700;letter-spacing:0.5px;text-decoration:none;padding:14px 32px;">Meet with Ben</a>
+    </td>
+  </tr>
+</table>
 
 ---
 
@@ -87,7 +95,7 @@ https://calendly.com/ben-brightwork/selling?utm_source=fub&utm_medium=email&utm_
 
 **Body:**
 
-Hi [first name],
+Hi %contact_first_name%,
 
 I'm going to move you to a lighter touch from here.
 
@@ -95,4 +103,10 @@ A few times a year, I send a market update to MCC homeowners who've connected th
 
 It's a service for people in this community, not a sales follow-up. You'll hear from me when there's something worth sharing. And if a question comes up in the meantime, I'm easy to reach:
 
-https://calendly.com/ben-brightwork/selling?utm_source=fub&utm_medium=email&utm_campaign=mcc-estimator&utm_content=day30
+<table cellpadding="0" cellspacing="0" role="presentation" style="margin-top:24px;margin-bottom:8px;">
+  <tr>
+    <td style="background-color:#00aedb;border-radius:3px;">
+      <a href="https://calendly.com/ben-brightwork/selling?utm_source=fub&utm_medium=email&utm_campaign=mcc-estimator&utm_content=day30" style="display:inline-block;color:#ffffff;font-family:Arial,sans-serif;font-size:15px;font-weight:700;letter-spacing:0.5px;text-decoration:none;padding:14px 32px;">Meet with Ben</a>
+    </td>
+  </tr>
+</table>

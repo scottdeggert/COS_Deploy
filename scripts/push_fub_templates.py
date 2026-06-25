@@ -62,6 +62,10 @@ HTML_TEMPLATE_RE = re.compile(
     r"(?:\*\*Template:\*\*|Template:)\s*[`']?[^\n`']*\.html[`']?",
     re.IGNORECASE,
 )
+NON_EMAIL_STEP_RE = re.compile(
+    r"^(?:#{1,2}\s+)?Step\s+\S+\s+—\s+Day\s+\d+\s+(?:SMS|Task|Call)",
+    re.MULTILINE | re.IGNORECASE,
+)
 SKIP_BODY_PREFIXES = (
     "fub auto-sends",
     "pause-on-response:",
@@ -161,6 +165,59 @@ def parse_path_blocks(section_text: str) -> list[tuple[str | None, str]]:
     return blocks
 
 
+def fetch_existing_templates(api_key: str) -> dict[str, int]:
+    credentials = base64.b64encode(f"{api_key}:".encode("utf-8")).decode("ascii")
+    existing: dict[str, int] = {}
+    offset = 0
+    limit = 200
+    while True:
+        request = Request(
+            f"{FUB_BASE_URL}/templates?limit={limit}&offset={offset}",
+            headers={"Authorization": f"Basic {credentials}"},
+            method="GET",
+        )
+        try:
+            with urlopen(request, timeout=30) as response:
+                data = json.loads(response.read().decode("utf-8"))
+        except (HTTPError, URLError) as exc:
+            print(f"WARNING: Could not fetch existing templates: {exc}", file=sys.stderr)
+            return existing
+        for t in data.get("templates", []):
+            existing[t["name"]] = t["id"]
+        total = data.get("_metadata", {}).get("total", 0)
+        offset += limit
+        if offset >= total:
+            break
+    return existing
+
+
+def put_template(api_key: str, template_id: int, template: EmailTemplate) -> tuple[bool, str]:
+    payload = {
+        "name": template.name,
+        "subject": template.subject,
+        "body": template.body,
+    }
+    credentials = base64.b64encode(f"{api_key}:".encode("utf-8")).decode("ascii")
+    request = Request(
+        f"{FUB_BASE_URL}/templates/{template_id}",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "Authorization": f"Basic {credentials}",
+            "Content-Type": "application/json",
+        },
+        method="PUT",
+    )
+    try:
+        with urlopen(request, timeout=30) as response:
+            body = response.read().decode("utf-8")
+            return True, body
+    except HTTPError as exc:
+        error_body = exc.read().decode("utf-8", errors="replace")
+        return False, f"HTTP {exc.code}: {error_body}"
+    except URLError as exc:
+        return False, str(exc.reason)
+
+
 def post_template(api_key: str, template: EmailTemplate) -> tuple[bool, str]:
     payload = {
         "name": template.name,
@@ -213,6 +270,13 @@ def main() -> int:
         print("FUB_API_KEY environment variable is required for --live mode.", file=sys.stderr)
         return 1
 
+    existing_templates: dict[str, int] = {}
+    if args.live:
+        print("Fetching existing templates from FUB...")
+        existing_templates = fetch_existing_templates(api_key)
+        print(f"Found {len(existing_templates)} existing templates.")
+
+    updated = 0
     for filename in SEQUENCE_FILES:
         path = seq_dir / filename
         if not path.is_file():
@@ -235,6 +299,9 @@ def main() -> int:
                 else len(content)
             )
             section_text = content[section_start:section_end]
+            non_email_match = NON_EMAIL_STEP_RE.search(section_text)
+            if non_email_match:
+                section_text = section_text[:non_email_match.start()]
             total_found += 1
 
             if is_html_step(heading_line, section_text):
@@ -274,10 +341,18 @@ def main() -> int:
                     preview += "..."
 
                 if args.live:
-                    ok, response = post_template(api_key, template)
+                    if template.name in existing_templates:
+                        ok, response = put_template(api_key, existing_templates[template.name], template)
+                        action = "UPDATED"
+                    else:
+                        ok, response = post_template(api_key, template)
+                        action = "CREATED"
                     if ok:
-                        created += 1
-                        print(f"  OK: {template.name}")
+                        if action == "UPDATED":
+                            updated += 1
+                        else:
+                            created += 1
+                        print(f"  {action}: {template.name}")
                     else:
                         failed += 1
                         print(f"  FAIL: {template.name} — {response}")

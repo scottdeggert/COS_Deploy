@@ -32,6 +32,7 @@ from tools.fub import (
 )
 from tools.fub_write import add_note_to_contact, enroll_in_action_plan
 from tools.health import run_health_check
+from tools.intent_router import ConversationBuffer, classify_intent
 from tools.logger import log_event
 from tools.scheduler import SimpleScheduler
 from tools.telegram import (
@@ -507,119 +508,74 @@ def _get_status_log(lines: int = 50) -> str:
         return f"Could not read log: {exc}"
 
 
+def _handle_hot_leads_list(client_id: str, chat_id: str) -> str:
+    return "Hot leads list coming soon."
+
+
+def _handle_draft_outreach(client_id: str, entity: str | None, chat_id: str) -> str:
+    return "Outreach drafting coming soon."
+
+
 def _handle_message(client_id: str, text: str, chat_id: str) -> str | None:
-    status_match = STATUS_PATTERN.match(text.strip())
-    if status_match:
-        lines = int(status_match.group(1) or 50)
+    # Always allow explicit operator commands through without classification
+    if STATUS_PATTERN.match(text.strip()):
+        lines = int(STATUS_PATTERN.match(text.strip()).group(1) or 50)
         return _get_status_log(lines)
 
-    if GREETING_PATTERN.match(text.strip()):
+    # Classify intent via Haiku with conversation context
+    intent_result = classify_intent(text, _conversation_buffer)
+    intent = intent_result.get("intent", "unknown")
+    entity = intent_result.get("entity")
+
+    if intent == "greeting":
         return GREETING_REPLY
 
-    if IDENTITY_PATTERN.match(text.strip()):
+    if intent == "identity_query":
         return IDENTITY_REPLY
-    if HELP_PATTERN.match(text.strip()):
+
+    if intent == "help_request":
         return HELP_REPLY
 
-    brief_match = BRIEF_ID_PATTERN.match(text.strip())
-    if brief_match:
-        contact_id = brief_match.group(1)
-        log_event(
-            "bot",
-            "brief_requested",
-            "start",
-            contact_id=contact_id,
-            file=__file__,
-            function="_handle_message",
-        )
-        log_event(
-            "cos_agent",
-            "run_brief",
-            "start",
-            contact_id=contact_id,
-            file=__file__,
-            function="_handle_message",
-        )
-        try:
+    if intent == "brief_request":
+        # entity is a name or numeric ID
+        if entity and entity.isdigit():
+            contact_id = entity
+            log_event("bot", "brief_requested", "start",
+                      contact_id=contact_id, file=__file__, function="_handle_message")
             return _run_brief_for_contact(client_id, contact_id)
-        except Exception as exc:
-            log_event(
-                "cos_agent",
-                "run_brief",
-                "failure",
-                detail=str(exc),
-                contact_id=contact_id,
-                exc_info=exc,
-                file=__file__,
-                function="_handle_message",
-            )
-            return BRIEF_ERROR_MSG
 
-    name_match = BRIEF_NAME_PATTERN.match(text.strip())
-    if name_match:
-        query = name_match.group(1).strip()
-        log_event(
-            "bot",
-            "name_lookup",
-            "start",
-            detail=query,
-            file=__file__,
-            function="_handle_message",
-        )
-        results = search_contacts(query, limit=5)
-        if isinstance(results, dict):
-            return _handle_disambiguation_result(client_id, chat_id, query, results)
-        if not results:
-            return f"No contact found for '{query}'. Check the name or use a contact ID."
-        if len(results) > 1:
-            lines = [f"Found {len(results)} matches. Which one?"]
-            for p in results:
-                name = f"{p.get('firstName', '')} {p.get('lastName', '')}".strip()
-                cid = str(p.get("id", ""))
-                lines.append(f"  brief {cid} — {name}")
-            return "\n".join(lines)
-        contact = results[0]
-        contact_id = str(contact.get("id", ""))
-        name = f"{contact.get('firstName', '')} {contact.get('lastName', '')}".strip()
-        log_event(
-            "bot",
-            "name_lookup",
-            "success",
-            detail=f"{name} → {contact_id}",
-            file=__file__,
-            function="_handle_message",
-        )
-        log_event(
-            "bot",
-            "brief_requested",
-            "start",
-            contact_id=contact_id,
-            file=__file__,
-            function="_handle_message",
-        )
-        log_event(
-            "cos_agent",
-            "run_brief",
-            "start",
-            contact_id=contact_id,
-            file=__file__,
-            function="_handle_message",
-        )
-        try:
+        if entity:
+            query = entity.strip()
+            log_event("bot", "name_lookup", "start",
+                      detail=query, file=__file__, function="_handle_message")
+            results = search_contacts(query, limit=5)
+            if isinstance(results, dict):
+                return _handle_disambiguation_result(client_id, chat_id, query, results)
+            if not results:
+                return f"No contact found for '{query}'. Try a contact ID."
+            if len(results) > 1:
+                lines = [f"Found {len(results)} matches. Which one?"]
+                for p in results:
+                    name = f"{p.get('firstName', '')} {p.get('lastName', '')}".strip()
+                    cid = str(p.get("id", ""))
+                    lines.append(f"  brief {cid} — {name}")
+                return "\n".join(lines)
+            contact = results[0]
+            contact_id = str(contact.get("id", ""))
             return _run_brief_for_contact(client_id, contact_id)
-        except Exception as exc:
-            log_event(
-                "cos_agent",
-                "run_brief",
-                "failure",
-                detail=str(exc),
-                contact_id=contact_id,
-                exc_info=exc,
-                file=__file__,
-                function="_handle_message",
-            )
-            return BRIEF_ERROR_MSG
 
+        return "Who would you like a brief on? Send me a name or contact ID."
+
+    if intent == "hot_leads_list":
+        return _handle_hot_leads_list(client_id, chat_id)
+
+    if intent == "draft_outreach":
+        return _handle_draft_outreach(client_id, entity, chat_id)
+
+    if intent == "status_check":
+        return _get_status_log(50)
+
+    # Fallback for unknown
     return UNKNOWN_MSG
 
 
@@ -656,6 +612,7 @@ def _start_watchdog() -> threading.Thread:
 
 
 _briefed_appointment_ids: set[int] = set()
+_conversation_buffer = ConversationBuffer()
 
 
 def run_bot(client_id: str) -> None:
@@ -773,9 +730,11 @@ def run_bot(client_id: str) -> None:
                         )
 
                         send_monitor_copy(f"[BEN → CoS] {text}")
+                        _conversation_buffer.add("user", text)
                         reply = _handle_message(client_id, text, chat_id=chat_id)
                         if reply is not None:
                             send_long_message(reply, chat_id=chat_id)
+                            _conversation_buffer.add("assistant", reply)
                             log_event(
                                 "telegram",
                                 "outbound",

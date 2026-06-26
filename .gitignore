@@ -8,4 +8,4 @@ __pycache__/
 *.pyo
 *.db
 *.log
-AGENT_SNAPSHOT.md
+AGENT_SNAPSHOT.mdvenv/

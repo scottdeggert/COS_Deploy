@@ -11,6 +11,7 @@ TELEGRAM_API = "https://api.telegram.org"
 BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
 OPERATOR_CHAT_ID = os.environ.get("OPERATOR_TELEGRAM_CHAT_ID", "")
+MONITOR_CHAT_ID = os.environ.get("TELEGRAM_MONITOR_CHAT_ID", "")
 
 session = requests.Session()
 _original_request = session.request
@@ -41,6 +42,42 @@ def send_message(text: str, chat_id: str = None, parse_mode: str | None = None) 
     except requests.RequestException as exc:
         print(f"sendMessage error: {exc}", file=sys.stderr)
         return False
+
+
+def send_long_message(text: str, chat_id: str = None) -> None:
+    """Send a message that may exceed Telegram's 4096-char limit.
+
+    Splits on double newlines to preserve formatting, never mid-sentence.
+    Falls back to hard split at 4000 chars if no clean break is found.
+    """
+    MAX_LEN = 4000  # Leave headroom below 4096 hard limit
+    target = chat_id or CHAT_ID
+
+    if len(text) <= MAX_LEN:
+        send_message(text, chat_id=target)
+        return
+
+    chunks = []
+    current = ""
+
+    for paragraph in text.split("\n\n"):
+        candidate = (current + "\n\n" + paragraph).lstrip("\n") if current else paragraph
+        if len(candidate) <= MAX_LEN:
+            current = candidate
+        else:
+            if current:
+                chunks.append(current)
+            # Paragraph itself exceeds limit — hard split
+            while len(paragraph) > MAX_LEN:
+                chunks.append(paragraph[:MAX_LEN])
+                paragraph = paragraph[MAX_LEN:]
+            current = paragraph
+
+    if current:
+        chunks.append(current)
+
+    for chunk in chunks:
+        send_message(chunk, chat_id=target)
 
 
 def send_inline_message(text: str, reply_markup: dict, chat_id: str = None) -> bool:
@@ -106,6 +143,16 @@ def send_operator_alert(message: str) -> None:
             detail=str(exc),
             exc_info=exc,
         )
+
+
+def send_monitor_copy(text: str) -> None:
+    """Mirror a message to the operator monitor channel. Never raises."""
+    if not MONITOR_CHAT_ID:
+        return
+    try:
+        send_message(text, chat_id=MONITOR_CHAT_ID)
+    except Exception:
+        pass
 
 
 def get_updates(offset: int = 0, timeout: int = 10) -> list[dict]:

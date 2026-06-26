@@ -18,6 +18,11 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from crew import run_brief
+from tools.appointments import (
+    format_appointment_summary,
+    get_contact_id_from_appointment,
+    get_upcoming_appointments,
+)
 from tools.fub import (
     SearchContactsDisambiguationResult,
     _contact_summary,
@@ -28,14 +33,18 @@ from tools.fub import (
 from tools.fub_write import add_note_to_contact, enroll_in_action_plan
 from tools.health import run_health_check
 from tools.logger import log_event
+from tools.scheduler import SimpleScheduler
 from tools.telegram import (
     BOT_TOKEN,
     CHAT_ID,
+    MONITOR_CHAT_ID,
     TELEGRAM_API,
     extract_message,
     get_updates,
     send_inline_message,
+    send_long_message,
     send_message,
+    send_monitor_copy,
     send_operator_alert,
     session as telegram_session,
 )
@@ -52,6 +61,7 @@ IDENTITY_PATTERN = re.compile(
     re.IGNORECASE,
 )
 HELP_PATTERN = re.compile(r"^(help|commands|options|\?)$", re.IGNORECASE)
+STATUS_PATTERN = re.compile(r"^(?:/)?status(?:\s+(\d+))?$", re.IGNORECASE)
 POLL_TIMEOUT = 30
 BRIEF_ERROR_MSG = (
     "I ran into a problem pulling that brief. Check FUB directly: "
@@ -293,7 +303,7 @@ def _handle_callback(client_id: str, callback_query: dict) -> None:
     if action == "brief_pick":
         try:
             result = _run_brief_for_contact(client_id, contact_id)
-            send_message(result, chat_id=chat_id)
+            send_long_message(result, chat_id=chat_id)
         except Exception as exc:
             log_event(
                 "bot",
@@ -484,7 +494,25 @@ def _handle_disambiguation_result(
     return brief
 
 
+def _get_status_log(lines: int = 50) -> str:
+    log_path = ROOT / "logs" / "cos_agent.log"
+    if not log_path.exists():
+        return "No log file found."
+    try:
+        with log_path.open(encoding="utf-8") as f:
+            all_lines = f.readlines()
+        tail = all_lines[-lines:]
+        return "".join(tail)[:3800]  # Telegram message limit is 4096
+    except Exception as exc:
+        return f"Could not read log: {exc}"
+
+
 def _handle_message(client_id: str, text: str, chat_id: str) -> str | None:
+    status_match = STATUS_PATTERN.match(text.strip())
+    if status_match:
+        lines = int(status_match.group(1) or 50)
+        return _get_status_log(lines)
+
     if GREETING_PATTERN.match(text.strip()):
         return GREETING_REPLY
 
@@ -627,6 +655,9 @@ def _start_watchdog() -> threading.Thread:
     return thread
 
 
+_briefed_appointment_ids: set[int] = set()
+
+
 def run_bot(client_id: str) -> None:
     """Poll Telegram indefinitely and route messages to CoS Agent."""
     startup_check()
@@ -638,7 +669,7 @@ def run_bot(client_id: str) -> None:
         file=__file__,
         function="run_bot",
     )
-    send_message("Chief of Staff is online.")
+    send_operator_alert("CoS Agent is online — polling started.")
     log_event(
         "cos_agent",
         "bot_start",
@@ -651,6 +682,71 @@ def run_bot(client_id: str) -> None:
     offset = _drain_stale_updates()
     configured_chat_id = str(CHAT_ID)
 
+    def _job_morning_digest() -> None:
+        """8:30am daily digest — today's appointments with brief links."""
+        appointments = get_upcoming_appointments(hours_ahead=18)
+        if not appointments:
+            send_message(
+                "Good morning. No appointments in FUB for today.",
+                chat_id=configured_chat_id,
+            )
+            return
+
+        lines = ["Good morning. Here's your day:\n"]
+        for appt in appointments:
+            summary = format_appointment_summary(appt)
+            contact_id = get_contact_id_from_appointment(appt)
+            if contact_id:
+                summary += f"\n  Reply: brief {contact_id} for a full brief"
+            lines.append(f"• {summary}")
+
+        send_long_message("\n".join(lines), chat_id=configured_chat_id)
+
+    def _job_pre_appointment_check() -> None:
+        """Runs every 15 minutes. Fires a brief 2 hours before any appointment
+        that has a linked contact and hasn't been briefed yet this session."""
+        appointments = get_upcoming_appointments(hours_ahead=2)
+        now = datetime.now(tz=timezone.utc)
+
+        for appt in appointments:
+            start_str = appt.get("start", "")
+            try:
+                start = datetime.fromisoformat(start_str.replace("Z", "+00:00"))
+            except ValueError:
+                continue
+
+            minutes_until = (start - now).total_seconds() / 60
+            if minutes_until > 120 or minutes_until < 90:
+                continue  # Only fire in the 90-120 minute window
+
+            appt_id = appt.get("id")
+            if appt_id in _briefed_appointment_ids:
+                continue
+            _briefed_appointment_ids.add(appt_id)
+
+            contact_id = get_contact_id_from_appointment(appt)
+            if not contact_id:
+                title = appt.get("title", "your next appointment")
+                send_message(
+                    f"Heads up — {title} starts in about 2 hours. "
+                    f"No contact linked in FUB so I can't pull a brief automatically. "
+                    f"Send me a name or ID if you want one.",
+                    chat_id=configured_chat_id,
+                )
+                continue
+
+            brief = _run_brief_for_contact(client_id, contact_id)
+            title = appt.get("title", "upcoming appointment")
+            send_long_message(
+                f"2-hour brief for {title}:\n\n{brief}",
+                chat_id=configured_chat_id,
+            )
+
+    scheduler = SimpleScheduler()
+    scheduler.add_daily(hour=8, minute=30, job=_job_morning_digest, name="morning_digest")
+    scheduler.add_interval(seconds=900, job=_job_pre_appointment_check, name="pre_appointment_check")
+    scheduler.start()
+
     try:
         while True:
             updates = get_updates(offset=offset, timeout=POLL_TIMEOUT)
@@ -661,7 +757,10 @@ def run_bot(client_id: str) -> None:
                 message = extract_message(update)
                 if message:
                     chat_id = message["chat_id"]
-                    if chat_id == configured_chat_id:
+                    monitor_chat_id = str(MONITOR_CHAT_ID)
+                    if chat_id == configured_chat_id or (
+                        monitor_chat_id and chat_id == monitor_chat_id
+                    ):
                         text = message["text"]
                         log_event(
                             "telegram",
@@ -673,9 +772,10 @@ def run_bot(client_id: str) -> None:
                             function="run_bot",
                         )
 
+                        send_monitor_copy(f"[BEN → CoS] {text}")
                         reply = _handle_message(client_id, text, chat_id=chat_id)
                         if reply is not None:
-                            send_message(reply, chat_id=chat_id)
+                            send_long_message(reply, chat_id=chat_id)
                             log_event(
                                 "telegram",
                                 "outbound",
@@ -685,6 +785,7 @@ def run_bot(client_id: str) -> None:
                                 file=__file__,
                                 function="run_bot",
                             )
+                            send_monitor_copy(f"[BEN] {text}\n[CoS] {reply[:500]}")
 
                 callback_query = update.get("callback_query")
                 if callback_query:
@@ -706,7 +807,7 @@ def run_bot(client_id: str) -> None:
             file=__file__,
             function="run_bot",
         )
-        send_message("Chief of Staff going offline.")
+        send_operator_alert("CoS Agent going offline.")
         log_event(
             "cos_agent",
             "bot_stop",

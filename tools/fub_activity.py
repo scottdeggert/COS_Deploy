@@ -2,32 +2,10 @@
 
 from __future__ import annotations
 
-import os
-from pathlib import Path
 from typing import Any
 
-import requests
-from dotenv import load_dotenv
-
-load_dotenv(Path(__file__).resolve().parent.parent / ".env", override=True)
-
+from services.fub_client import fub_get as _fub_get
 from tools.logger import log_event
-
-FUB_API_KEY = os.environ.get("FUB_API_KEY", "")
-FUB_BASE = "https://api.followupboss.com/v1"
-
-session = requests.Session()
-
-
-def _fub_get(path: str, params: dict | None = None) -> dict:
-    resp = session.get(
-        f"{FUB_BASE}{path}",
-        auth=(FUB_API_KEY, ""),
-        params=params or {},
-        timeout=15,
-    )
-    resp.raise_for_status()
-    return resp.json()
 
 
 def get_contact_context(person_id: str, notes_limit: int = 5) -> dict[str, Any]:

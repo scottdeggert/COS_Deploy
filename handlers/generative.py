@@ -1,0 +1,71 @@
+"""Generative writing handler -- draft_communication and draft_outreach."""
+
+from __future__ import annotations
+
+from app.schemas import HandlerResult, RoutedIntent
+from tools.draft_communication import draft_communication
+from tools.fub import search_contacts
+from tools.fub_activity import get_contact_context
+from tools.logger import log_event
+from tools.telegram import send_operator_alert
+
+FALLBACK_MESSAGE = (
+    "I ran into a problem drafting that. Try again or check FUB directly: "
+    "https://app.followupboss.com"
+)
+
+
+def handle(intent: RoutedIntent) -> HandlerResult:
+    """Handle draft_communication and draft_outreach intents."""
+    log_event(
+        "generative", "handle", "start",
+        detail=f"entity={intent.entity}, type={intent.comm_type}",
+        file=__file__, function="handle",
+    )
+    entity = intent.entity
+    comm_type = intent.comm_type or "email"
+    request_text = intent.original_message.raw_text
+    contact_context = None
+
+    try:
+        if entity:
+            try:
+                results = search_contacts(entity, limit=3)
+                if isinstance(results, dict):
+                    primary = results.get("primary")
+                    if primary:
+                        contact_context = get_contact_context(
+                            str(primary.get("id", ""))
+                        )
+                elif results and len(results) == 1:
+                    contact_context = get_contact_context(
+                        str(results[0].get("id", ""))
+                    )
+            except Exception as exc:
+                log_event(
+                    "generative", "contact_lookup", "failure",
+                    detail=str(exc), exc_info=exc,
+                    file=__file__, function="handle",
+                )
+
+        draft = draft_communication(
+            request_text, comm_type=comm_type, contact_context=contact_context
+        )
+        log_event(
+            "generative", "handle", "success",
+            detail=f"{comm_type} draft complete",
+            file=__file__, function="handle",
+        )
+        return HandlerResult(success=True, telegram_output=draft)
+    except Exception as exc:
+        log_event(
+            "generative", "handle", "failure",
+            detail=str(exc), exc_info=exc,
+            file=__file__, function="handle",
+        )
+        send_operator_alert(f"Generative handler failed: {exc}")
+        return HandlerResult(
+            success=False,
+            telegram_output=FALLBACK_MESSAGE,
+            error_details=str(exc),
+        )

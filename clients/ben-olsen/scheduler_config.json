@@ -1,0 +1,14 @@
+{
+  "morning_digest": {
+    "hour": 8,
+    "minute": 30,
+    "timezone_offset_hours": -7,
+    "note": "Pacific time. UTC-7 (PDT). Change to -8 in November when PST begins."
+  },
+  "pre_appointment_check": {
+    "interval_seconds": 900,
+    "window_start_minutes": 90,
+    "window_end_minutes": 120
+  },
+  "hot_leads_silence_days": 14
+}

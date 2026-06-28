@@ -22,9 +22,11 @@ OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 HAIKU_MODEL = "anthropic/claude-haiku-4-5"
 
 INTENTS = """
-brief_request - user wants a contact brief by name or ID
-hot_leads_list - user confirms they want the list of cooling hot leads
-draft_outreach - user wants outreach drafted for one or all hot leads
+brief_request - user wants a contact brief, profile, or lookup by name or ID; includes requests to find, look up, or get details on a contact
+hot_leads - user asks about cooling hot leads in general
+hot_leads_list - user wants to see cooling hot leads, says "hot leads", "show me the list", "yes" after being asked
+draft_outreach - user wants outreach drafted for one or all hot leads; entity is the contact name or "all"
+draft_communication - user wants to draft an email, text, or message to someone; entity is the full contact name if provided
 status_check - user wants recent log output
 greeting - hello, hi, checking in
 identity_query - asking what the agent is or does
@@ -38,8 +40,13 @@ Classify the user's message into exactly one intent from this list:
 
 Also extract any entity (contact name, contact ID, or "all") if present.
 
+Rules:
+- Treat "look up", "find", "what's X's address", "get me info on", and similar lookup phrases as brief_request — they are the same thing
+- For draft_outreach: extract the contact name as entity, or "all" if the user says "all", "everyone", "draft all", "all of them"
+- For draft_communication: extract the full contact name as entity if mentioned. Also extract "type" as "email", "sms", or "note" based on context — default to "email" if unspecified. Return both as: {{"intent": "draft_communication", "entity": "Full Name or null", "type": "email"}}
+
 Respond ONLY with valid JSON in this exact format:
-{{"intent": "intent_name", "entity": "extracted entity or null", "confidence": 0.0}}
+{{"intent": "intent_name", "entity": "extracted entity or null", "type": "email or sms or note or null", "confidence": 0.0}}
 
 No other text. No markdown. Just the JSON object."""
 

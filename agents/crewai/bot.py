@@ -30,8 +30,11 @@ from tools.fub import (
     get_contact_by_id,
     search_contacts,
 )
+from tools.draft_communication import draft_communication
+from tools.fub_activity import get_contact_context
 from tools.fub_write import add_note_to_contact, enroll_in_action_plan
 from tools.health import run_health_check
+from tools.hot_leads import get_hot_leads_going_cold
 from tools.intent_router import ConversationBuffer, classify_intent
 from tools.logger import log_event
 from tools.scheduler import SimpleScheduler
@@ -68,7 +71,7 @@ BRIEF_ERROR_MSG = (
     "I ran into a problem pulling that brief. Check FUB directly: "
     "https://app.followupboss.com"
 )
-UNKNOWN_MSG = "I didn't get that. Try: brief 31735 or brief Scott Eggert"
+UNKNOWN_MSG = "I didn't catch that. Try asking me to draft an email, pull up a contact, or check your hot leads."
 GREETING_REPLY = "Chief of Staff here. Send me a contact ID or name and I'll pull a brief."
 IDENTITY_REPLY = "I'm Ben's Chief of Staff. Right now I pull pre-appointment briefs on contacts. Send me a name or contact ID and I'll get you what I know."
 HELP_REPLY = "Here's what I can do:\n• brief [name] — pull a contact brief by name\n• brief [ID] — pull a contact brief by FUB ID\n• hello — check that I'm online"
@@ -509,11 +512,58 @@ def _get_status_log(lines: int = 50) -> str:
 
 
 def _handle_hot_leads_list(client_id: str, chat_id: str) -> str:
-    return "Hot leads list coming soon."
+    cold = get_hot_leads_going_cold(days_silent=14)
+    if not cold:
+        return "No Hot 90 Days leads going cold right now. Pipeline looks healthy."
+
+    lines = [f"Here are your {len(cold)} hot leads going cold:\n"]
+    for lead in cold:
+        lines.append(
+            f"• {lead['name']} — {lead['stage']} — "
+            f"last activity {lead['last_activity']} ({lead['days_silent']} days ago)"
+        )
+
+    lines.append(
+        "\nWant me to draft outreach for one or all of these? "
+        "Reply with a name or \"draft all\"."
+    )
+    return "\n".join(lines)
 
 
-def _handle_draft_outreach(client_id: str, entity: str | None, chat_id: str) -> str:
-    return "Outreach drafting coming soon."
+def _handle_generative_request(
+    client_id: str, request: str, entity: str | None, comm_type: str, chat_id: str
+) -> str:
+    """Single handler for all generative writing requests.
+    Ben's voice is always on. FUB context loaded when a contact name is provided."""
+    contact_context = None
+
+    if entity:
+        try:
+            results = search_contacts(entity, limit=3)
+            if isinstance(results, dict):
+                primary = results.get("primary")
+                if primary:
+                    contact_context = get_contact_context(str(primary.get("id", "")))
+            elif results and len(results) == 1:
+                contact_context = get_contact_context(str(results[0].get("id", "")))
+            elif results and len(results) > 1:
+                names = ", ".join(
+                    f"{p.get('firstName', '')} {p.get('lastName', '')}".strip()
+                    for p in results
+                )
+                send_message(
+                    f"Found {len(results)} contacts matching {entity}: {names}. "
+                    f"Drafting without contact context — use the full name to be specific.",
+                    chat_id=chat_id,
+                )
+        except Exception as exc:
+            log_event(
+                "bot", "generative_lookup", "failure",
+                detail=str(exc), exc_info=exc,
+                file=__file__, function="_handle_generative_request",
+            )
+
+    return draft_communication(request, comm_type=comm_type, contact_context=contact_context)
 
 
 def _handle_message(client_id: str, text: str, chat_id: str) -> str | None:
@@ -566,11 +616,14 @@ def _handle_message(client_id: str, text: str, chat_id: str) -> str | None:
 
         return "Who would you like a brief on? Send me a name or contact ID."
 
-    if intent == "hot_leads_list":
+    if intent in ("hot_leads", "hot_leads_list"):
         return _handle_hot_leads_list(client_id, chat_id)
 
-    if intent == "draft_outreach":
-        return _handle_draft_outreach(client_id, entity, chat_id)
+    if intent in ("draft_outreach", "draft_communication", "generative"):
+        comm_type = intent_result.get("type") or "email"
+        return _handle_generative_request(
+            client_id, text, entity, comm_type, chat_id
+        )
 
     if intent == "status_check":
         return _get_status_log(50)
@@ -640,22 +693,60 @@ def run_bot(client_id: str) -> None:
     configured_chat_id = str(CHAT_ID)
 
     def _job_morning_digest() -> None:
-        """8:30am daily digest — today's appointments with brief links."""
-        appointments = get_upcoming_appointments(hours_ahead=18)
-        if not appointments:
-            send_message(
-                "Good morning. No appointments in FUB for today.",
-                chat_id=configured_chat_id,
-            )
-            return
+        """8:30am daily digest — greeting, today's appointments, hot leads check."""
+        import random
+        from datetime import timedelta
 
-        lines = ["Good morning. Here's your day:\n"]
-        for appt in appointments:
-            summary = format_appointment_summary(appt)
-            contact_id = get_contact_id_from_appointment(appt)
-            if contact_id:
-                summary += f"\n  Reply: brief {contact_id} for a full brief"
-            lines.append(f"• {summary}")
+        now_pacific = datetime.now(tz=timezone.utc) + timedelta(hours=-7)
+        day_name = now_pacific.strftime("%A")
+
+        greetings = [
+            f"Good morning, Ben.",
+            f"Morning, Ben. Here's your day.",
+            f"Buenos días, Ben.",
+            f"Happy {day_name}, Ben.",
+            f"Good morning, Ben. Another day in Lamorinda.",
+        ]
+        greeting = random.choice(greetings)
+
+        lines = [greeting, ""]
+
+        # Today's appointments
+        appointments = get_upcoming_appointments(hours_ahead=18)
+        if appointments:
+            lines.append("Today's appointments:")
+            for appt in appointments:
+                summary = format_appointment_summary(appt)
+                contact_id = get_contact_id_from_appointment(appt)
+                if contact_id:
+                    summary += f"\n  Send: brief {contact_id} for a full brief"
+                lines.append(f"• {summary}")
+        else:
+            lines.append("No appointments in FUB today.")
+
+        lines.append("")
+
+        # Hot leads going cold
+        try:
+            cold = get_hot_leads_going_cold(days_silent=14)
+            if cold:
+                lines.append(
+                    f"One thing worth knowing: you have {len(cold)} lead{'s' if len(cold) != 1 else ''} "
+                    f"tagged Hot 90 Days with no activity in the last 14 days. "
+                    f"They're warm and going cold. Reply \"hot leads\" to see the list."
+                )
+            else:
+                lines.append("Your Hot 90 Days leads are all active. Nothing going cold.")
+        except Exception as exc:
+            log_event(
+                "scheduler",
+                "morning_digest_hot_leads",
+                "failure",
+                detail=str(exc),
+                exc_info=exc,
+                file=__file__,
+                function="_job_morning_digest",
+            )
 
         send_long_message("\n".join(lines), chat_id=configured_chat_id)
 

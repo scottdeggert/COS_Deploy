@@ -1,7 +1,7 @@
 """
 Follow Up Boss API client.
 
-Framework-agnostic integration — no CrewAI or other agent framework imports.
+Framework-agnostic integration -- no CrewAI or other agent framework imports.
 Can be used directly or wrapped by any orchestration layer.
 """
 
@@ -13,41 +13,20 @@ import sys
 from datetime import datetime, timezone
 from typing import Any, TypedDict
 
-import requests
 from requests.exceptions import HTTPError, RequestException
 
+from services.fub_client import fub_get as _fub_get
 from tools.logger import log_event
 
-BASE_URL = "https://api.followupboss.com/v1"
 ASSIGNED_TO_NAME = "Ben Olsen"
-DEFAULT_TIMEOUT = 10
 DISAMBIGUATION_ACTIVITY_DAYS = 90
 ACTIVE_ACTION_PLAN_STATUSES = frozenset({"running", "active"})
-
-session = requests.Session()
 
 
 class SearchContactsDisambiguationResult(TypedDict):
     primary: dict
     duplicates_found: list[dict]
     disambiguation_required: bool
-
-_original_request = session.request
-
-
-def _request_with_timeout(method: str, url: str, **kwargs: Any) -> requests.Response:
-    kwargs.setdefault("timeout", DEFAULT_TIMEOUT)
-    return _original_request(method, url, **kwargs)
-
-
-session.request = _request_with_timeout  # type: ignore[method-assign]
-
-
-def _ensure_api_key() -> None:
-    api_key = os.environ.get("FUB_API_KEY", "")
-    if not api_key:
-        raise ValueError("FUB_API_KEY environment variable is required")
-    session.auth = (api_key, "")
 
 
 def _assigned_to_name(person: dict) -> str | None:
@@ -67,43 +46,6 @@ def _require_ben_olsen(person: dict) -> None:
         raise PermissionError("Contact not assigned to Ben Olsen")
 
 
-def _log_http_error(method: str, endpoint: str, response: requests.Response) -> None:
-    print(
-        f"FUB API error: {method} {endpoint} — HTTP {response.status_code}: {response.text}",
-        file=sys.stderr,
-    )
-
-
-def _raise_http_error(method: str, endpoint: str, response: requests.Response) -> None:
-    _log_http_error(method, endpoint, response)
-    raise HTTPError(
-        f"{method} {endpoint} failed with HTTP {response.status_code}",
-        response=response,
-    )
-
-
-def _get_json(method: str, endpoint: str, **kwargs: Any) -> dict:
-    _ensure_api_key()
-    url = f"{BASE_URL}{endpoint}"
-    try:
-        response = session.request(method, url, **kwargs)
-    except RequestException as exc:
-        print(f"FUB API error: {method} {endpoint} — {exc}", file=sys.stderr)
-        raise
-
-    if not response.ok:
-        _raise_http_error(method, endpoint, response)
-
-    try:
-        return response.json()
-    except json.JSONDecodeError as exc:
-        print(
-            f"FUB API error: {method} {endpoint} — invalid JSON response: {exc}",
-            file=sys.stderr,
-        )
-        raise ValueError(f"Invalid JSON from FUB API: {endpoint}") from exc
-
-
 def _extract_list(payload: dict, key: str) -> list[dict]:
     items = payload.get(key, [])
     if not isinstance(items, list):
@@ -121,31 +63,8 @@ def get_contact_by_id(contact_id: str) -> dict:
         file=__file__,
         function="get_contact_by_id",
     )
-    endpoint = f"/people/{contact_id}"
     try:
-        _ensure_api_key()
-        url = f"{BASE_URL}{endpoint}"
-        try:
-            response = session.get(url)
-        except RequestException as exc:
-            print(f"FUB API error: GET {endpoint} — {exc}", file=sys.stderr)
-            raise
-
-        if response.status_code != 200:
-            _log_http_error("GET", endpoint, response)
-            raise ValueError(
-                f"Failed to fetch contact {contact_id}: HTTP {response.status_code}"
-            )
-
-        try:
-            result = response.json()
-        except json.JSONDecodeError as exc:
-            print(
-                f"FUB API error: GET {endpoint} — invalid JSON response: {exc}",
-                file=sys.stderr,
-            )
-            raise ValueError(f"Invalid JSON from FUB API: {endpoint}") from exc
-
+        result = _fub_get(f"/people/{contact_id}")
         log_event(
             "fub",
             "get_contact",
@@ -181,14 +100,13 @@ def get_recent_activity(contact_id: str, limit: int = 10) -> list[dict]:
         contact = get_contact_by_id(contact_id)
         _require_ben_olsen(contact)
 
-        endpoint = "/events"
         params = {
             "personId": contact_id,
             "limit": limit,
             "sort": "created",
             "direction": "desc",
         }
-        payload = _get_json("GET", endpoint, params=params)
+        payload = _fub_get("/events", params=params)
         result = _extract_list(payload, "events")
         log_event(
             "fub",
@@ -253,9 +171,8 @@ def _has_valid_email(person: dict) -> bool:
 
 
 def _list_action_plan_enrollments(contact_id: str) -> list[dict]:
-    endpoint = "/actionPlansPeople"
     params = {"personId": contact_id, "limit": 100}
-    payload = _get_json("GET", endpoint, params=params)
+    payload = _fub_get("/actionPlansPeople", params=params)
     return _extract_list(payload, "actionPlansPeople")
 
 
@@ -272,9 +189,8 @@ def _has_active_action_plan(contact_id: str) -> bool:
 
 
 def _list_appointments_for_contact(contact_id: str) -> list[dict]:
-    endpoint = "/appointments"
     params = {"personId": contact_id, "limit": 100}
-    payload = _get_json("GET", endpoint, params=params)
+    payload = _fub_get("/appointments", params=params)
     return _extract_list(payload, "appointments")
 
 
@@ -362,9 +278,8 @@ def search_contacts(
     returns a disambiguation payload with primary, duplicates_found, and
     disambiguation_required.
     """
-    endpoint = "/people"
     params = {"q": query, "limit": limit, "assigned": "true"}
-    payload = _get_json("GET", endpoint, params=params)
+    payload = _fub_get("/people", params=params)
     people = _extract_list(payload, "people")
     filtered = [
         person for person in people if _assigned_to_name(person) == ASSIGNED_TO_NAME
@@ -378,9 +293,8 @@ def search_contacts(
 
 def get_contact_by_email(email: str) -> dict | None:
     """Return the first matching person by email, or None if not found or not Ben's."""
-    endpoint = "/people"
     params = {"email": email}
-    payload = _get_json("GET", endpoint, params=params)
+    payload = _fub_get("/people", params=params)
     people = _extract_list(payload, "people")
     if not people:
         return None
@@ -405,9 +319,8 @@ def get_appointments(contact_id: str) -> list[dict]:
         contact = get_contact_by_id(contact_id)
         _require_ben_olsen(contact)
 
-        endpoint = "/appointments"
         params = {"personId": contact_id}
-        payload = _get_json("GET", endpoint, params=params)
+        payload = _fub_get("/appointments", params=params)
         result = _extract_list(payload, "appointments")
         log_event(
             "fub",

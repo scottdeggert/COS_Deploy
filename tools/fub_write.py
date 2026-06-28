@@ -1,53 +1,9 @@
-"""Follow Up Boss write operations — kept separate from read-only tools/fub.py."""
+"""Follow Up Boss write operations -- kept separate from read-only tools/fub.py."""
 
 from __future__ import annotations
 
-import json
-import os
-import sys
-from typing import Any
-
-import requests
-from requests.exceptions import HTTPError, RequestException
-
 from tools.logger import log_event
-
-BASE_URL = "https://api.followupboss.com/v1"
-DEFAULT_TIMEOUT = 10
-
-session = requests.Session()
-
-_original_request = session.request
-
-
-def _request_with_timeout(method: str, url: str, **kwargs: Any) -> requests.Response:
-    kwargs.setdefault("timeout", DEFAULT_TIMEOUT)
-    return _original_request(method, url, **kwargs)
-
-
-session.request = _request_with_timeout  # type: ignore[method-assign]
-
-
-def _ensure_api_key() -> None:
-    api_key = os.environ.get("FUB_API_KEY", "")
-    if not api_key:
-        raise ValueError("FUB_API_KEY environment variable is required")
-    session.auth = (api_key, "")
-
-
-def _log_http_error(method: str, endpoint: str, response: requests.Response) -> None:
-    print(
-        f"FUB API error: {method} {endpoint} — HTTP {response.status_code}: {response.text}",
-        file=sys.stderr,
-    )
-
-
-def _raise_http_error(method: str, endpoint: str, response: requests.Response) -> None:
-    _log_http_error(method, endpoint, response)
-    raise HTTPError(
-        f"{method} {endpoint} failed with HTTP {response.status_code}",
-        response=response,
-    )
+from services.fub_client import fub_post, fub_put
 
 
 def add_note_to_contact(contact_id: str, note_text: str) -> dict:
@@ -60,29 +16,9 @@ def add_note_to_contact(contact_id: str, note_text: str) -> dict:
         file=__file__,
         function="add_note_to_contact",
     )
-    endpoint = "/notes"
     payload = {"personId": int(contact_id), "body": note_text}
     try:
-        _ensure_api_key()
-        url = f"{BASE_URL}{endpoint}"
-        try:
-            response = session.post(url, json=payload)
-        except RequestException as exc:
-            print(f"FUB API error: POST {endpoint} — {exc}", file=sys.stderr)
-            raise
-
-        if not response.ok:
-            _raise_http_error("POST", endpoint, response)
-
-        try:
-            result = response.json()
-        except json.JSONDecodeError as exc:
-            print(
-                f"FUB API error: POST {endpoint} — invalid JSON response: {exc}",
-                file=sys.stderr,
-            )
-            raise ValueError(f"Invalid JSON from FUB API: {endpoint}") from exc
-
+        result = fub_post("/notes", json=payload)
         log_event(
             "fub",
             "add_note",
@@ -116,29 +52,9 @@ def enroll_in_action_plan(contact_id: str, plan_id: int) -> dict:
         file=__file__,
         function="enroll_in_action_plan",
     )
-    endpoint = "/actionPlansPeople"
     payload = {"personId": int(contact_id), "actionPlanId": int(plan_id)}
     try:
-        _ensure_api_key()
-        url = f"{BASE_URL}{endpoint}"
-        try:
-            response = session.post(url, json=payload)
-        except RequestException as exc:
-            print(f"FUB API error: POST {endpoint} — {exc}", file=sys.stderr)
-            raise
-
-        if not response.ok:
-            _raise_http_error("POST", endpoint, response)
-
-        try:
-            result = response.json()
-        except json.JSONDecodeError as exc:
-            print(
-                f"FUB API error: POST {endpoint} — invalid JSON response: {exc}",
-                file=sys.stderr,
-            )
-            raise ValueError(f"Invalid JSON from FUB API: {endpoint}") from exc
-
+        result = fub_post("/actionPlansPeople", json=payload)
         log_event(
             "fub",
             "enroll_action_plan",
@@ -175,30 +91,9 @@ def add_tags_to_contact(contact_id: str, tags: list[str]) -> dict:
         file=__file__,
         function="add_tags_to_contact",
     )
-    endpoint = f"/people/{contact_id}"
-    params = {"mergeTags": "true"}
     payload = {"tags": tags}
     try:
-        _ensure_api_key()
-        url = f"{BASE_URL}{endpoint}"
-        try:
-            response = session.put(url, params=params, json=payload)
-        except RequestException as exc:
-            print(f"FUB API error: PUT {endpoint} — {exc}", file=sys.stderr)
-            raise
-
-        if not response.ok:
-            _raise_http_error("PUT", endpoint, response)
-
-        try:
-            result = response.json()
-        except json.JSONDecodeError as exc:
-            print(
-                f"FUB API error: PUT {endpoint} — invalid JSON response: {exc}",
-                file=sys.stderr,
-            )
-            raise ValueError(f"Invalid JSON from FUB API: {endpoint}") from exc
-
+        result = fub_put(f"/people/{contact_id}?mergeTags=true", json=payload)
         log_event(
             "fub",
             "add_tags",
@@ -232,7 +127,6 @@ def send_fub_email(contact_id: str, subject: str, body: str) -> dict:
         file=__file__,
         function="send_fub_email",
     )
-    endpoint = "/emails"
     payload = {
         "personId": int(contact_id),
         "subject": subject,
@@ -240,26 +134,7 @@ def send_fub_email(contact_id: str, subject: str, body: str) -> dict:
         "isHtml": False,
     }
     try:
-        _ensure_api_key()
-        url = f"{BASE_URL}{endpoint}"
-        try:
-            response = session.post(url, json=payload)
-        except RequestException as exc:
-            print(f"FUB API error: POST {endpoint} — {exc}", file=sys.stderr)
-            raise
-
-        if not response.ok:
-            _raise_http_error("POST", endpoint, response)
-
-        try:
-            result = response.json()
-        except json.JSONDecodeError as exc:
-            print(
-                f"FUB API error: POST {endpoint} — invalid JSON response: {exc}",
-                file=sys.stderr,
-            )
-            raise ValueError(f"Invalid JSON from FUB API: {endpoint}") from exc
-
+        result = fub_post("/emails", json=payload)
         log_event(
             "fub",
             "send_email",

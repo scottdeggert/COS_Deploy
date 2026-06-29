@@ -17,12 +17,12 @@ from core.router import ConversationBuffer, classify_intent
 from core.scheduler import SimpleScheduler
 from core.transport import poll
 from handlers import brief, generative, hot_leads, lead_alert, status
+from tools.draft_communication import chat_reply, draft_communication
 from tools.logger import log_event
 from tools.telegram import send_long_message, send_operator_alert
 
 STATUS_PATTERN = re.compile(r"^(?:/)?status(?:\s+(\d+))?$", re.IGNORECASE)
 
-GREETING_REPLY = "Chief of Staff here. Send me a contact ID or name and I'll pull a brief."
 IDENTITY_REPLY = (
     "I'm Ben's Chief of Staff. I pull pre-appointment briefs, draft emails in your voice, "
     "and monitor your pipeline. Send me a name or contact ID to get started."
@@ -34,11 +34,6 @@ HELP_REPLY = (
     "* hot leads -- see your warm pipeline going cold\n"
     "* status -- check recent agent log"
 )
-UNKNOWN_REPLY = (
-    "I didn't catch that. Try asking me to draft an email, "
-    "pull up a contact, or check your hot leads."
-)
-
 _buffer = ConversationBuffer()
 
 
@@ -56,7 +51,11 @@ def _route_message(message: InboundMessage) -> str | None:
     intent = classify_intent(message, _buffer)
 
     if intent.intent_type == "greeting":
-        return GREETING_REPLY
+        return chat_reply(
+            f"Ben just greeted you with: '{message.raw_text}'. "
+            "Respond warmly and briefly. Open the door for what he needs. "
+            "1-2 sentences. Vary your phrasing naturally."
+        )
 
     if intent.intent_type == "identity_query":
         return IDENTITY_REPLY
@@ -80,7 +79,13 @@ def _route_message(message: InboundMessage) -> str | None:
         result = status.handle_status(50)
         return result.telegram_output
 
-    return UNKNOWN_REPLY
+    return chat_reply(
+        f"Ben sent this message and you could not classify it: "
+        f"'{message.raw_text}'. "
+        "Do not announce that you did not understand. "
+        "Ask a clarifying question or reflect back what you think he might mean. "
+        "Stay warm and in the conversation. 1-2 sentences."
+    )
 
 
 def _route_callback(callback: InboundCallback) -> str | None:
@@ -149,7 +154,12 @@ def _build_scheduled_jobs(scheduler: SimpleScheduler) -> None:
         else:
             lines.append("Your Hot 90 Days leads are all active. Nothing going cold.")
 
-        send_long_message("\n".join(lines), chat_id=str(TELEGRAM_CHAT_ID))
+        digest_text = "\n".join(lines)
+        send_long_message(digest_text, chat_id=str(TELEGRAM_CHAT_ID))
+
+        from app.config import TELEGRAM_MONITOR_CHAT_ID
+        if TELEGRAM_MONITOR_CHAT_ID:
+            send_long_message(digest_text, chat_id=str(TELEGRAM_MONITOR_CHAT_ID))
 
     def pre_appointment_check(state: dict) -> None:
         from agents.crewai.crew import run_brief as _run_brief

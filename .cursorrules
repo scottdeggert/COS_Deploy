@@ -1,7 +1,7 @@
-# CLAUDE.md
 # COS_Deploy — BrightWork Chief of Staff Agent
 # Built by MKTNG.co (Scott Eggert) for Ben Olsen, BrightWork Realty Advocates
 # Last updated: June 28, 2026 (post-refactor)
+# Mirrors CLAUDE.md — keep both files in sync when requirements change.
 
 ---
 
@@ -203,7 +203,8 @@ COS_Deploy/
 ├── scripts/
 │   └── push_fub_templates.py
 ├── logs/                       # gitignored
-├── CLAUDE.md                   # This file
+├── CLAUDE.md                   # Canonical requirements doc (mirrors .cursorrules)
+├── .cursorrules                # This file
 ├── README.md
 ├── .env                        # gitignored, never commit
 ├── .env.example

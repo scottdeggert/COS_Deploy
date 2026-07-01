@@ -14,6 +14,7 @@ Known Haiku quirks (do not remove these workarounds):
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -23,6 +24,8 @@ import requests
 from app.config import OPENROUTER_API_KEY, OPENROUTER_URL, HAIKU_MODEL, LOGS_DIR
 from app.schemas import InboundMessage, RoutedIntent
 from tools.logger import log_event
+
+STATUS_PATTERN = re.compile(r"^(?:/)?status(?:\s+(\d+))?$", re.IGNORECASE)
 
 _INTENTS = """
 brief_request - user wants a contact brief, profile, or lookup by name or ID; includes "look up", "find", "what's X's address"
@@ -107,6 +110,16 @@ def classify_intent(message: InboundMessage, buffer: ConversationBuffer) -> Rout
     Returns a RoutedIntent. Never raises -- falls back to intent_type='unknown'
     on any failure.
     """
+    status_match = STATUS_PATTERN.match(message.raw_text.strip())
+    if status_match:
+        lines = status_match.group(1) or "50"
+        return RoutedIntent(
+            original_message=message,
+            intent_type="status_check",
+            entity=lines,
+            confidence=1.0,
+        )
+
     recent = buffer.recent(3)
     context_lines = []
     for turn in recent:

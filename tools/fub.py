@@ -291,6 +291,18 @@ def search_contacts(
     return filtered
 
 
+def get_pipeline_contacts(assigned_user_id: int) -> list[dict]:
+    """Fetch contacts assigned to the given FUB user ID."""
+    params = {
+        "assignedUserId": assigned_user_id,
+        "limit": 100,
+        "sort": "lastActivity",
+        "order": "desc",
+    }
+    payload = _fub_get("/people", params=params)
+    return _extract_list(payload, "people")
+
+
 def get_contact_by_email(email: str) -> dict | None:
     """Return the first matching person by email, or None if not found or not Ben's."""
     params = {"email": email}

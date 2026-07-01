@@ -9,59 +9,32 @@ Usage:
 
 from __future__ import annotations
 
-import re
+import json
 
-from app.config import CLIENT_ID
-from app.schemas import InboundCallback, InboundMessage, RoutedIntent
+from app.config import CLIENT_ID, CLIENTS_DIR
+from app.schemas import InboundCallback, InboundMessage
 from core.router import ConversationBuffer, classify_intent
-from core.scheduler import SimpleScheduler
+from core.scheduler import SimpleScheduler, morning_digest, pre_appointment_check
 from core.transport import poll
 from handlers import brief, generative, hot_leads, lead_alert, status
-from tools.draft_communication import chat_reply, draft_communication
 from tools.logger import log_event
-from tools.telegram import send_long_message, send_operator_alert
+from tools.telegram import send_operator_alert
 
-STATUS_PATTERN = re.compile(r"^(?:/)?status(?:\s+(\d+))?$", re.IGNORECASE)
-
-IDENTITY_REPLY = (
-    "I'm Ben's Chief of Staff. I pull pre-appointment briefs, draft emails in your voice, "
-    "and monitor your pipeline. Send me a name or contact ID to get started."
-)
-HELP_REPLY = (
-    "Here's what I can do:\n"
-    "* brief [name] or [ID] -- pull a contact brief\n"
-    "* draft an email to [name] about [topic]\n"
-    "* hot leads -- see your warm pipeline going cold\n"
-    "* status -- check recent agent log"
-)
 _buffer = ConversationBuffer()
 
 
 def _route_message(message: InboundMessage) -> str | None:
     """Classify intent and dispatch to handler. Return reply string or None."""
-
-    # Status command bypasses classifier
-    status_match = STATUS_PATTERN.match(message.raw_text.strip())
-    if status_match:
-        lines = int(status_match.group(1) or 50)
-        result = status.handle_status(lines)
-        return result.telegram_output
-
-    # Classify via Haiku
     intent = classify_intent(message, _buffer)
 
     if intent.intent_type == "greeting":
-        return chat_reply(
-            f"Ben just greeted you with: '{message.raw_text}'. "
-            "Respond warmly and briefly. Open the door for what he needs. "
-            "1-2 sentences. Vary your phrasing naturally."
-        )
+        return generative.handle_greeting(intent).telegram_output
 
     if intent.intent_type == "identity_query":
-        return IDENTITY_REPLY
+        return generative.handle_identity(intent).telegram_output
 
     if intent.intent_type == "help_request":
-        return HELP_REPLY
+        return generative.handle_help(intent).telegram_output
 
     if intent.intent_type == "brief_request":
         result = brief.handle(intent)
@@ -76,16 +49,11 @@ def _route_message(message: InboundMessage) -> str | None:
         return result.telegram_output
 
     if intent.intent_type == "status_check":
-        result = status.handle_status(50)
+        lines = int(intent.entity or 50)
+        result = status.handle_status(lines)
         return result.telegram_output
 
-    return chat_reply(
-        f"Ben sent this message and you could not classify it: "
-        f"'{message.raw_text}'. "
-        "Do not announce that you did not understand. "
-        "Ask a clarifying question or reflect back what you think he might mean. "
-        "Stay warm and in the conversation. 1-2 sentences."
-    )
+    return generative.handle_fallback(intent).telegram_output
 
 
 def _route_callback(callback: InboundCallback) -> str | None:
@@ -96,19 +64,6 @@ def _route_callback(callback: InboundCallback) -> str | None:
 
 def _build_scheduled_jobs(scheduler: SimpleScheduler) -> None:
     """Register all scheduled jobs. Job functions call tools/ directly."""
-    import json
-    import random
-    from datetime import datetime, timedelta, timezone
-
-    from app.config import CLIENTS_DIR, TELEGRAM_CHAT_ID
-    from tools.appointments import (
-        format_appointment_summary,
-        get_contact_id_from_appointment,
-        get_upcoming_appointments,
-    )
-    from tools.hot_leads import get_hot_leads_going_cold
-    from tools.telegram import send_long_message, send_message
-
     config_path = CLIENTS_DIR / CLIENT_ID / "scheduler_config.json"
     with config_path.open(encoding="utf-8") as f:
         sched_config = json.load(f)
@@ -116,101 +71,6 @@ def _build_scheduled_jobs(scheduler: SimpleScheduler) -> None:
     digest_hour = sched_config["morning_digest"]["hour"]
     digest_minute = sched_config["morning_digest"]["minute"]
     appt_interval = sched_config["pre_appointment_check"]["interval_seconds"]
-
-    def morning_digest() -> None:
-        now_pacific = datetime.now(tz=timezone.utc) + timedelta(hours=-7)
-        day_name = now_pacific.strftime("%A")
-        greetings = [
-            "Good morning, Ben.",
-            "Morning, Ben. Here's your day.",
-            "Buenos dias, Ben.",
-            f"Happy {day_name}, Ben.",
-            "Good morning, Ben. Another day in Lamorinda.",
-        ]
-        lines = [random.choice(greetings), ""]
-
-        appointments = get_upcoming_appointments(hours_ahead=18)
-        if appointments:
-            lines.append("Today's appointments:")
-            for appt in appointments:
-                summary = format_appointment_summary(appt)
-                contact_id = get_contact_id_from_appointment(appt)
-                if contact_id:
-                    summary += f"\n  Send: brief {contact_id} for a full brief"
-                lines.append(f"* {summary}")
-        else:
-            lines.append("No appointments in FUB today.")
-
-        lines.append("")
-
-        cold = get_hot_leads_going_cold(days_silent=14)
-        if cold:
-            lines.append(
-                f"One thing worth knowing: you have {len(cold)} lead"
-                f"{'s' if len(cold) != 1 else ''} tagged Hot 90 Days with no "
-                f"activity in the last 14 days. They're warm and going cold. "
-                f"Reply \"hot leads\" to see the list."
-            )
-        else:
-            lines.append("Your Hot 90 Days leads are all active. Nothing going cold.")
-
-        digest_text = "\n".join(lines)
-        send_long_message(digest_text, chat_id=str(TELEGRAM_CHAT_ID))
-
-        from app.config import TELEGRAM_MONITOR_CHAT_ID
-        if TELEGRAM_MONITOR_CHAT_ID:
-            send_long_message(digest_text, chat_id=str(TELEGRAM_MONITOR_CHAT_ID))
-
-    def pre_appointment_check(state: dict) -> None:
-        from agents.crewai.crew import run_brief as _run_brief
-
-        appointments = get_upcoming_appointments(hours_ahead=2)
-        now = datetime.now(tz=timezone.utc)
-        briefed_ids: list = state.setdefault("briefed_appointment_ids", [])
-
-        for appt in appointments:
-            start_str = appt.get("start", "")
-            try:
-                start = datetime.fromisoformat(start_str.replace("Z", "+00:00"))
-            except ValueError:
-                continue
-
-            minutes_until = (start - now).total_seconds() / 60
-            if minutes_until > 120 or minutes_until < 90:
-                continue
-
-            appt_id = appt.get("id")
-            if appt_id in briefed_ids:
-                continue
-            briefed_ids.append(appt_id)
-
-            contact_id = get_contact_id_from_appointment(appt)
-            if not contact_id:
-                title = appt.get("title", "your next appointment")
-                send_message(
-                    f"Heads up -- {title} starts in about 2 hours. "
-                    "No contact linked in FUB so I can't pull a brief automatically. "
-                    "Send me a name or ID if you want one.",
-                    chat_id=str(TELEGRAM_CHAT_ID),
-                )
-                continue
-
-            try:
-                brief_text = _run_brief(CLIENT_ID, contact_id)
-                title = appt.get("title", "upcoming appointment")
-                send_long_message(
-                    f"2-hour brief for {title}:\n\n{brief_text}",
-                    chat_id=str(TELEGRAM_CHAT_ID),
-                )
-            except Exception as exc:
-                log_event(
-                    "scheduler", "pre_appointment_brief", "failure",
-                    detail=str(exc), contact_id=contact_id, exc_info=exc,
-                    file=__file__, function="pre_appointment_check",
-                )
-                send_operator_alert(
-                    f"Pre-appointment brief failed for contact {contact_id}: {exc}"
-                )
 
     scheduler.add_daily(
         hour=digest_hour, minute=digest_minute,

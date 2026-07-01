@@ -123,8 +123,8 @@ def handle_callback(callback: InboundCallback) -> HandlerResult:
                 )
 
         if action == "brief_pick":
-            from handlers.brief import _run_brief_for_contact
-            brief_text = _run_brief_for_contact(CLIENT_ID, contact_id)
+            from handlers.brief import run_brief_for_contact
+            brief_text = run_brief_for_contact(CLIENT_ID, contact_id)
             log_event(
                 "bot", "brief_pick", "success",
                 contact_id=contact_id,

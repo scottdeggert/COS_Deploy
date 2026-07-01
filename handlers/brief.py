@@ -21,12 +21,12 @@ FALLBACK_MESSAGE = (
 )
 
 
-def _run_brief_for_contact(client_id: str, contact_id: str) -> str:
+def run_brief_for_contact(client_id: str, contact_id: str) -> str:
     """Run the CrewAI brief generation for a contact."""
     log_event(
         "cos_agent", "run_brief", "start",
         contact_id=contact_id,
-        file=__file__, function="_run_brief_for_contact",
+        file=__file__, function="run_brief_for_contact",
     )
     try:
         from agents.crewai.crew import run_brief as _run_brief
@@ -34,7 +34,7 @@ def _run_brief_for_contact(client_id: str, contact_id: str) -> str:
         log_event(
             "cos_agent", "run_brief", "success",
             contact_id=contact_id,
-            file=__file__, function="_run_brief_for_contact",
+            file=__file__, function="run_brief_for_contact",
         )
         run_health_check(
             "brief",
@@ -60,7 +60,7 @@ def _run_brief_for_contact(client_id: str, contact_id: str) -> str:
         log_event(
             "cos_agent", "run_brief", "failure",
             detail=str(exc), contact_id=contact_id, exc_info=exc,
-            file=__file__, function="_run_brief_for_contact",
+            file=__file__, function="run_brief_for_contact",
         )
         return FALLBACK_MESSAGE
 
@@ -140,7 +140,7 @@ def _handle_disambiguation_result(
         detail=f"{name} -> {contact_id} (auto-disambiguated)",
         file=__file__, function="_handle_disambiguation_result",
     )
-    brief = _run_brief_for_contact(client_id, contact_id)
+    brief = run_brief_for_contact(client_id, contact_id)
     if duplicates_found:
         total_records = 1 + len(duplicates_found)
         brief += _duplicate_merge_note(name, total_records)
@@ -165,7 +165,7 @@ def handle(intent: RoutedIntent) -> HandlerResult:
                 contact_id=contact_id,
                 file=__file__, function="handle",
             )
-            brief_text = _run_brief_for_contact(CLIENT_ID, contact_id)
+            brief_text = run_brief_for_contact(CLIENT_ID, contact_id)
             return HandlerResult(success=True, telegram_output=brief_text)
 
         if entity:
@@ -194,7 +194,7 @@ def handle(intent: RoutedIntent) -> HandlerResult:
                 return HandlerResult(success=True, telegram_output="\n".join(lines))
             contact = results[0]
             contact_id = str(contact.get("id", ""))
-            brief_text = _run_brief_for_contact(CLIENT_ID, contact_id)
+            brief_text = run_brief_for_contact(CLIENT_ID, contact_id)
             return HandlerResult(success=True, telegram_output=brief_text)
 
         return HandlerResult(

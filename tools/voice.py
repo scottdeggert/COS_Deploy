@@ -20,6 +20,29 @@ For SMS: under 160 characters, very casual, first name only.
 For notes: professional tone, suitable for a FUB contact record."""
 
 
+def _load_voice_guide() -> str:
+    from pathlib import Path
+
+    from tools.logger import log_event
+
+    guide_path = (
+        Path(__file__).resolve().parent.parent
+        / "clients/ben-olsen/knowledge/voice-guide.md"
+    )
+    try:
+        return guide_path.read_text(encoding="utf-8")
+    except OSError:
+        log_event(
+            "cos_agent",
+            "load_voice_guide",
+            "fallback",
+            detail="voice-guide.md missing or unreadable",
+            file=__file__,
+            function="_load_voice_guide",
+        )
+        return BEN_VOICE_CONTEXT
+
+
 def load_communication_prefs() -> str:
     """Load saved communication preferences and return as a formatted string.
     Returns empty string if no prefs exist yet."""
@@ -45,7 +68,7 @@ def load_communication_prefs() -> str:
 
 def build_system_prompt(contact_context: dict | None = None) -> str:
     """Assemble the full system prompt: voice + prefs + optional contact context."""
-    parts = [BEN_VOICE_CONTEXT]
+    parts = [_load_voice_guide()]
 
     prefs = load_communication_prefs()
     if prefs:

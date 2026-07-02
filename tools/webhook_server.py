@@ -9,7 +9,7 @@ import json
 import os
 import sys
 import threading
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -25,6 +25,7 @@ if str(ROOT) not in sys.path:
 
 load_dotenv(ROOT / ".env")
 
+from services.fub_client import fub_get
 from tools.fub import get_contact_by_id, get_recent_activity
 from tools.fub_write import add_note_to_contact, add_tags_to_contact
 from tools.logger import log_event
@@ -37,6 +38,8 @@ FALLBACK_SECONDS = 30 * 60
 LAST_ACTIVITY_WINDOW_SECONDS = 120
 NOTIFY_DEDUP_SECONDS = 300
 LEAD_ALERT_STATE_PATH = ROOT / "logs" / "lead_alert_state.json"
+ACTIVITY_FEED_PATH = ROOT / "logs" / "activity_feed.json"
+ACTIVITY_FEED_RETENTION_DAYS = 7
 
 app = FastAPI()
 _fallback_timers: dict[str, threading.Timer] = {}
@@ -542,6 +545,72 @@ def _schedule_fallback(contact_id: str) -> None:
     timer.start()
 
 
+def _fub_single_record(payload: dict, key: str) -> dict:
+    nested = payload.get(key)
+    if isinstance(nested, dict):
+        return nested
+    return payload
+
+
+def _load_activity_feed() -> list[dict]:
+    if not ACTIVITY_FEED_PATH.exists():
+        return []
+    try:
+        with ACTIVITY_FEED_PATH.open(encoding="utf-8") as handle:
+            data = json.load(handle)
+        if isinstance(data, list):
+            return data
+        return []
+    except (json.JSONDecodeError, OSError):
+        return []
+
+
+def _trim_activity_feed(entries: list[dict]) -> list[dict]:
+    cutoff = datetime.now(timezone.utc) - timedelta(days=ACTIVITY_FEED_RETENTION_DAYS)
+    trimmed: list[dict] = []
+    for entry in entries:
+        timestamp = entry.get("timestamp")
+        if not timestamp:
+            continue
+        try:
+            parsed = _parse_iso_timestamp(str(timestamp))
+        except (ValueError, TypeError):
+            continue
+        if parsed >= cutoff:
+            trimmed.append(entry)
+    return trimmed
+
+
+def _append_activity_feed(entry: dict) -> None:
+    with _state_lock:
+        try:
+            entries = _load_activity_feed()
+            entries.append(entry)
+            entries = _trim_activity_feed(entries)
+            ACTIVITY_FEED_PATH.parent.mkdir(parents=True, exist_ok=True)
+            with ACTIVITY_FEED_PATH.open("w", encoding="utf-8") as handle:
+                json.dump(entries, handle)
+            log_event(
+                "webhook",
+                "activity_feed",
+                "success",
+                contact_id=entry.get("person_id"),
+                file=__file__,
+                function="_append_activity_feed",
+            )
+        except Exception as exc:
+            log_event(
+                "webhook",
+                "activity_feed",
+                "failure",
+                detail=str(exc),
+                contact_id=entry.get("person_id"),
+                exc_info=exc,
+                file=__file__,
+                function="_append_activity_feed",
+            )
+
+
 def _get_source_from_events(events: list[dict], fallback: str) -> str:
     """Return source from the most recent event with a meaningful source value."""
     sorted_events = sorted(
@@ -700,6 +769,113 @@ def _process_fub_event(payload: dict) -> None:
             if not _last_activity_is_fresh(contact):
                 continue
             handle_new_lead(contact_id)
+        return
+
+    if event == "eventsCreated":
+        for raw_id in resource_ids:
+            try:
+                payload_data = fub_get(f"/events/{raw_id}")
+                event_record = _fub_single_record(payload_data, "events")
+                person_id = event_record.get("personId")
+                if person_id is None:
+                    continue
+                event_type = str(event_record.get("type") or "").strip()
+                page_title = str(event_record.get("pageTitle") or "").strip()
+                detail = event_type
+                if page_title:
+                    detail = f"{event_type} {page_title}".strip()
+                _append_activity_feed({
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "event_type": "eventsCreated",
+                    "actor_type": "inbound",
+                    "person_id": str(person_id),
+                    "person_name": "",
+                    "detail": detail,
+                })
+            except Exception as exc:
+                log_event(
+                    "webhook",
+                    "eventsCreated",
+                    "failure",
+                    detail=str(exc),
+                    file=__file__,
+                    function="_process_fub_event",
+                )
+        return
+
+    if event == "callsCreated":
+        for raw_id in resource_ids:
+            try:
+                payload_data = fub_get(f"/calls/{raw_id}")
+                call_record = _fub_single_record(payload_data, "calls")
+                person_id = call_record.get("personId")
+                if person_id is None:
+                    continue
+                user_id = call_record.get("userId")
+                is_incoming = call_record.get("isIncoming")
+                if user_id == 1:
+                    actor_type = "ben"
+                elif is_incoming is True:
+                    actor_type = "inbound"
+                else:
+                    continue
+                outcome = str(call_record.get("outcome") or "").strip()
+                note = str(call_record.get("note") or "")[:100]
+                detail = f"{outcome} {note}".strip()
+                _append_activity_feed({
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "event_type": "callsCreated",
+                    "actor_type": actor_type,
+                    "person_id": str(person_id),
+                    "person_name": "",
+                    "detail": detail,
+                })
+            except Exception as exc:
+                log_event(
+                    "webhook",
+                    "callsCreated",
+                    "failure",
+                    detail=str(exc),
+                    file=__file__,
+                    function="_process_fub_event",
+                )
+        return
+
+    if event == "textMessagesCreated":
+        for raw_id in resource_ids:
+            try:
+                payload_data = fub_get(f"/textMessages/{raw_id}")
+                text_record = _fub_single_record(payload_data, "textMessages")
+                person_id = text_record.get("personId")
+                if person_id is None:
+                    continue
+                user_id = text_record.get("userId")
+                is_incoming = text_record.get("isIncoming")
+                if user_id == 1 and is_incoming is False:
+                    actor_type = "ben"
+                    detail = "outbound text"
+                elif is_incoming is True:
+                    actor_type = "inbound"
+                    detail = "inbound text"
+                else:
+                    continue
+                _append_activity_feed({
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "event_type": "textMessagesCreated",
+                    "actor_type": actor_type,
+                    "person_id": str(person_id),
+                    "person_name": "",
+                    "detail": detail,
+                })
+            except Exception as exc:
+                log_event(
+                    "webhook",
+                    "textMessagesCreated",
+                    "failure",
+                    detail=str(exc),
+                    file=__file__,
+                    function="_process_fub_event",
+                )
         return
 
 

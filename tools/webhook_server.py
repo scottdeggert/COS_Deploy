@@ -25,7 +25,8 @@ if str(ROOT) not in sys.path:
 
 load_dotenv(ROOT / ".env")
 
-from services.fub_client import fub_get
+from app.config import CLIENT_ID, CLIENTS_DIR
+from services.fub_client import configure_events_rate_limit, fub_get
 from tools.fub import get_contact_by_id, get_recent_activity
 from tools.fub_write import add_note_to_contact, add_tags_to_contact
 from tools.logger import log_event
@@ -35,11 +36,52 @@ ASSIGNED_TO_NAME = "Ben Olsen"
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 DRAFT_MODEL = "anthropic/claude-sonnet-4-6"
 FALLBACK_SECONDS = 30 * 60
-LAST_ACTIVITY_WINDOW_SECONDS = 120
 NOTIFY_DEDUP_SECONDS = 300
 LEAD_ALERT_STATE_PATH = ROOT / "logs" / "lead_alert_state.json"
 ACTIVITY_FEED_PATH = ROOT / "logs" / "activity_feed.json"
 ACTIVITY_FEED_RETENTION_DAYS = 7
+_LEAD_ALERT_CONFIG_PATH = CLIENTS_DIR / CLIENT_ID / "scheduler_config.json"
+
+_DEFAULT_LEAD_ALERT_CONFIG = {
+    "creation_date_threshold_days": 30,
+    "last_activity_window_seconds": 120,
+    "events_rate_limit_per_10s": 18,
+}
+
+
+def _load_lead_alert_config() -> dict[str, int]:
+    if not _LEAD_ALERT_CONFIG_PATH.exists():
+        return dict(_DEFAULT_LEAD_ALERT_CONFIG)
+    try:
+        with _LEAD_ALERT_CONFIG_PATH.open(encoding="utf-8") as handle:
+            payload = json.load(handle)
+        lead_alert = payload.get("lead_alert") or {}
+        return {
+            "creation_date_threshold_days": int(
+                lead_alert.get(
+                    "creation_date_threshold_days",
+                    _DEFAULT_LEAD_ALERT_CONFIG["creation_date_threshold_days"],
+                )
+            ),
+            "last_activity_window_seconds": int(
+                lead_alert.get(
+                    "last_activity_window_seconds",
+                    _DEFAULT_LEAD_ALERT_CONFIG["last_activity_window_seconds"],
+                )
+            ),
+            "events_rate_limit_per_10s": int(
+                lead_alert.get(
+                    "events_rate_limit_per_10s",
+                    _DEFAULT_LEAD_ALERT_CONFIG["events_rate_limit_per_10s"],
+                )
+            ),
+        }
+    except (json.JSONDecodeError, OSError, TypeError, ValueError):
+        return dict(_DEFAULT_LEAD_ALERT_CONFIG)
+
+
+_LEAD_ALERT_CONFIG = _load_lead_alert_config()
+configure_events_rate_limit(_LEAD_ALERT_CONFIG["events_rate_limit_per_10s"])
 
 app = FastAPI()
 _fallback_timers: dict[str, threading.Timer] = {}
@@ -152,7 +194,58 @@ def _last_activity_is_fresh(contact: dict) -> bool:
     if not last_activity:
         return False
     elapsed = datetime.now(timezone.utc) - _parse_iso_timestamp(str(last_activity))
-    return elapsed.total_seconds() <= LAST_ACTIVITY_WINDOW_SECONDS
+    window_seconds = _LEAD_ALERT_CONFIG["last_activity_window_seconds"]
+    return elapsed.total_seconds() <= window_seconds
+
+
+def _contact_created_within_threshold(contact: dict) -> bool:
+    created = contact.get("created")
+    if not created:
+        return False
+    created_at = _parse_iso_timestamp(str(created))
+    threshold_days = _LEAD_ALERT_CONFIG["creation_date_threshold_days"]
+    age = datetime.now(timezone.utc) - created_at
+    return age.days <= threshold_days
+
+
+def _resource_type_from_event(event: str | None) -> str:
+    if not event:
+        return "unknown"
+    if event.startswith("people"):
+        return "people"
+    if event.startswith("events"):
+        return "events"
+    if event.startswith("calls"):
+        return "calls"
+    if event.startswith("textMessages"):
+        return "textMessages"
+    return "unknown"
+
+
+def _format_resource_ids(resource_ids: list[Any]) -> str:
+    normalized = [str(raw_id) for raw_id in resource_ids]
+    if len(normalized) <= 20:
+        return ",".join(normalized)
+    shown = ",".join(normalized[:20])
+    return f"{shown},...+{len(normalized) - 20} more"
+
+
+def _log_inbound_webhook(payload: dict[str, Any]) -> None:
+    event = str(payload.get("event") or "unknown")
+    resource_ids = payload.get("resourceIds") or []
+    if not isinstance(resource_ids, list):
+        resource_ids = []
+    log_event(
+        "webhook",
+        "inbound",
+        "start",
+        detail=(
+            f"event={event} resource_type={_resource_type_from_event(event)} "
+            f"resource_count={len(resource_ids)} resource_ids={_format_resource_ids(resource_ids)}"
+        ),
+        file=__file__,
+        function="_log_inbound_webhook",
+    )
 
 
 # FUB_WEBHOOK_SECRET must be set to the X-System-Key value used when
@@ -631,10 +724,19 @@ def _get_source_from_events(events: list[dict], fallback: str) -> str:
     return fallback
 
 
-def handle_new_lead(contact_id: str) -> None:
+def handle_new_lead(contact_id: str, event_type: str = "peopleCreated") -> None:
     """Fetch contact, draft email, send Telegram card, schedule fallback."""
     with _in_flight_lock:
         if contact_id in _in_flight:
+            log_event(
+                "lead_alert",
+                "handle_new_lead",
+                "success",
+                detail="suppressed duplicate in-flight",
+                contact_id=contact_id,
+                file=__file__,
+                function="handle_new_lead",
+            )
             return
         _in_flight.add(contact_id)
     try:
@@ -642,6 +744,7 @@ def handle_new_lead(contact_id: str) -> None:
             "lead_alert",
             "handle_new_lead",
             "start",
+            detail=f"source_event={event_type}",
             contact_id=contact_id,
             file=__file__,
             function="handle_new_lead",
@@ -650,8 +753,8 @@ def handle_new_lead(contact_id: str) -> None:
             log_event(
                 "lead_alert",
                 "handle_new_lead",
-                "fallback",
-                detail="duplicate notification suppressed",
+                "success",
+                detail="suppressed duplicate",
                 contact_id=contact_id,
                 file=__file__,
                 function="handle_new_lead",
@@ -663,8 +766,8 @@ def handle_new_lead(contact_id: str) -> None:
             log_event(
                 "lead_alert",
                 "handle_new_lead",
-                "fallback",
-                detail="not assigned to Ben Olsen",
+                "success",
+                detail="suppressed not assigned to Ben Olsen",
                 contact_id=contact_id,
                 file=__file__,
                 function="handle_new_lead",
@@ -730,6 +833,7 @@ def handle_new_lead(contact_id: str) -> None:
             "lead_alert",
             "handle_new_lead",
             "success",
+            detail=f"alert sent via {event_type}",
             contact_id=contact_id,
             file=__file__,
             function="handle_new_lead",
@@ -750,25 +854,61 @@ def handle_new_lead(contact_id: str) -> None:
             _in_flight.discard(contact_id)
 
 
+def _process_people_updated(contact_id: str) -> None:
+    try:
+        contact = get_contact_by_id(contact_id)
+    except Exception as exc:
+        log_event(
+            "lead_alert",
+            "peopleUpdated",
+            "failure",
+            detail=str(exc),
+            contact_id=contact_id,
+            exc_info=exc,
+            file=__file__,
+            function="_process_people_updated",
+        )
+        return
+
+    if not _contact_created_within_threshold(contact):
+        log_event(
+            "lead_alert",
+            "peopleUpdated",
+            "success",
+            detail="suppressed stale contact: created before threshold",
+            contact_id=contact_id,
+            file=__file__,
+            function="_process_people_updated",
+        )
+        return
+
+    if not _last_activity_is_fresh(contact):
+        log_event(
+            "lead_alert",
+            "peopleUpdated",
+            "success",
+            detail="suppressed not fresh: lastActivity outside window",
+            contact_id=contact_id,
+            file=__file__,
+            function="_process_people_updated",
+        )
+        return
+
+    handle_new_lead(contact_id, event_type="peopleUpdated")
+
+
 def _process_fub_event(payload: dict) -> None:
     event = payload.get("event")
     resource_ids = payload.get("resourceIds") or []
 
     if event == "peopleCreated":
         for raw_id in resource_ids:
-            handle_new_lead(str(raw_id))
+            handle_new_lead(str(raw_id), event_type="peopleCreated")
         return
 
     if event == "peopleUpdated":
         for raw_id in resource_ids:
-            contact_id = str(raw_id)
-            try:
-                contact = get_contact_by_id(contact_id)
-            except Exception:
-                continue
-            if not _last_activity_is_fresh(contact):
-                continue
-            handle_new_lead(contact_id)
+            _process_people_updated(str(raw_id))
         return
 
     if event == "eventsCreated":
@@ -878,6 +1018,15 @@ def _process_fub_event(payload: dict) -> None:
                 )
         return
 
+    log_event(
+        "webhook",
+        "dispatch",
+        "success",
+        detail=f"no matching route: {event or 'unknown'}",
+        file=__file__,
+        function="_process_fub_event",
+    )
+
 
 @app.get("/health")
 def health() -> dict[str, str]:
@@ -901,6 +1050,7 @@ async def fub_webhook(
     except json.JSONDecodeError as exc:
         raise HTTPException(status_code=400, detail="Invalid JSON") from exc
 
+    _log_inbound_webhook(payload)
     background_tasks.add_task(_process_fub_event, payload)
     return JSONResponse(status_code=200, content={"status": "accepted"})
 

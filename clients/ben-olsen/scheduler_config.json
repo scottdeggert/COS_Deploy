@@ -3,12 +3,21 @@
     "hour": 8,
     "minute": 30,
     "timezone_offset_hours": -7,
-    "note": "Pacific time. UTC-7 (PDT). Change to -8 in November when PST begins."
+    "catch_up_hours": 2,
+    "deadman_backstop_hour": 10,
+    "deadman_backstop_minute": 0,
+    "note": "Pacific time via America/Los_Angeles in scheduler. timezone_offset_hours is legacy, not used for window math. catch_up_hours: send if not yet sent today and now is between scheduled time and this many hours after."
   },
   "pre_appointment_check": {
     "interval_seconds": 900,
     "window_start_minutes": 90,
     "window_end_minutes": 120
   },
-  "hot_leads_silence_days": 14
+  "hot_leads_silence_days": 14,
+  "lead_alert": {
+    "creation_date_threshold_days": 30,
+    "last_activity_window_seconds": 120,
+    "events_rate_limit_per_10s": 18,
+    "note": "creation_date_threshold_days: contacts older than this are never treated as new leads on peopleUpdated. last_activity_window_seconds: freshness gate for peopleUpdated. events_rate_limit_per_10s: max GET /events calls per sliding 10-second window (FUB limit is about 20)."
+  }
 }

@@ -1,17 +1,16 @@
 """Telegram bot client for send/receive messaging."""
 
-import os
 import sys
 
 import requests
 
+from app.config import TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, TELEGRAM_MONITOR_CHAT_ID
 from tools.logger import log_event
 
 TELEGRAM_API = "https://api.telegram.org"
-BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
-CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
-OPERATOR_CHAT_ID = os.environ.get("OPERATOR_TELEGRAM_CHAT_ID", "")
-MONITOR_CHAT_ID = os.environ.get("TELEGRAM_MONITOR_CHAT_ID", "")
+BOT_TOKEN = TELEGRAM_BOT_TOKEN
+CHAT_ID = TELEGRAM_CHAT_ID
+MONITOR_CHAT_ID = TELEGRAM_MONITOR_CHAT_ID
 
 session = requests.Session()
 _original_request = session.request
@@ -98,15 +97,35 @@ def send_inline_message(text: str, reply_markup: dict, chat_id: str = None) -> b
         return False
 
 
+def _monitor_chat_id() -> str | None:
+    """Return TELEGRAM_MONITOR_CHAT_ID, or None if unset or equal to Ben's chat."""
+    monitor = str(TELEGRAM_MONITOR_CHAT_ID or "").strip()
+    ben = str(TELEGRAM_CHAT_ID or "").strip()
+    if not monitor:
+        return None
+    if monitor == ben:
+        log_event(
+            "monitoring",
+            "operator_alert",
+            "fallback",
+            detail="TELEGRAM_MONITOR_CHAT_ID equals TELEGRAM_CHAT_ID; alert blocked",
+            file=__file__,
+            function="_monitor_chat_id",
+        )
+        return None
+    return monitor
+
+
 def send_operator_alert(message: str) -> None:
-    """Send a plain-text alert to the operator channel. Never raises."""
+    """Send a plain-text alert to the monitor channel only. Never raises."""
     try:
-        if not OPERATOR_CHAT_ID:
+        chat_id = _monitor_chat_id()
+        if not chat_id:
             log_event(
                 "monitoring",
                 "operator_alert",
                 "fallback",
-                detail="OPERATOR_TELEGRAM_CHAT_ID not set",
+                detail="TELEGRAM_MONITOR_CHAT_ID not set or blocked",
                 file=__file__,
                 function="send_operator_alert",
             )
@@ -114,7 +133,7 @@ def send_operator_alert(message: str) -> None:
 
         url = f"{TELEGRAM_API}/bot{BOT_TOKEN}/sendMessage"
         payload = {
-            "chat_id": OPERATOR_CHAT_ID,
+            "chat_id": chat_id,
             "text": message,
         }
         resp = session.post(url, json=payload)
@@ -147,10 +166,11 @@ def send_operator_alert(message: str) -> None:
 
 def send_monitor_copy(text: str) -> None:
     """Mirror a message to the operator monitor channel. Never raises."""
-    if not MONITOR_CHAT_ID:
+    chat_id = _monitor_chat_id()
+    if not chat_id:
         return
     try:
-        send_message(text, chat_id=MONITOR_CHAT_ID)
+        send_message(text, chat_id=chat_id)
     except Exception:
         pass
 

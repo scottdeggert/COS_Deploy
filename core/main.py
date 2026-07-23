@@ -10,10 +10,16 @@ Usage:
 from __future__ import annotations
 
 import json
+import os
+import signal
+import subprocess
+import sys
+import threading
+import time
 
-from app.config import CLIENT_ID, CLIENTS_DIR
+from app.config import CLIENT_ID, CLIENTS_DIR, TELEGRAM_MONITOR_CHAT_ID
 from app.schemas import InboundCallback, InboundMessage
-from core.router import ConversationBuffer, classify_intent
+from core.router import ConversationBuffer, classify_intent, is_admin_chat
 from core.scheduler import SimpleScheduler, morning_digest, pre_appointment_check
 from core.transport import poll
 from handlers import brief, generative, hot_leads, lead_alert, status
@@ -49,9 +55,34 @@ def _route_message(message: InboundMessage) -> str | None:
         return result.telegram_output
 
     if intent.intent_type == "status_check":
+        if not is_admin_chat(intent.original_message.chat_id):
+            return generative.handle_fallback(intent).telegram_output
         lines = int(intent.entity or 50)
         result = status.handle_status(lines)
         return result.telegram_output
+
+    if intent.intent_type == "digest_test":
+        if not is_admin_chat(intent.original_message.chat_id):
+            return generative.handle_fallback(intent).telegram_output
+        log_event(
+            "digest_test", "morning_digest", "start",
+            file=__file__, function="_route_message",
+        )
+        try:
+            morning_digest(target_chat_id=str(TELEGRAM_MONITOR_CHAT_ID))
+            log_event(
+                "digest_test", "morning_digest", "success",
+                file=__file__, function="_route_message",
+            )
+            return "Morning digest triggered manually. Sent to the monitor channel only."
+        except Exception as exc:
+            log_event(
+                "digest_test", "morning_digest", "failure",
+                detail=str(exc), exc_info=exc,
+                file=__file__, function="_route_message",
+            )
+            send_operator_alert(f"Manual digest test failed: {exc}")
+            return "Manual digest trigger failed. Check operator alerts."
 
     return generative.handle_fallback(intent).telegram_output
 
@@ -82,6 +113,74 @@ def _build_scheduled_jobs(scheduler: SimpleScheduler) -> None:
     )
 
 
+_WATCHDOG_RESPAWN_DELAY_SECONDS = 2
+
+
+def _terminate_stale_watchdog_processes() -> None:
+    """Kill orphaned tools.watchdog processes left after core.main restarts."""
+    try:
+        result = subprocess.run(
+            ["pgrep", "-f", r"python -m tools\.watchdog"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return
+    if result.returncode != 0:
+        return
+    for line in result.stdout.splitlines():
+        if not line.strip().isdigit():
+            continue
+        pid = int(line.strip())
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except (ProcessLookupError, PermissionError):
+            pass
+    time.sleep(0.5)
+
+
+def _watchdog_supervisor() -> None:
+    """Keep a single tools/watchdog.py instance running."""
+    while True:
+        _terminate_stale_watchdog_processes()
+        log_event(
+            "watchdog",
+            "supervisor",
+            "start",
+            file=__file__,
+            function="_watchdog_supervisor",
+        )
+        proc = subprocess.run(
+            [sys.executable, "-m", "tools.watchdog"],
+            cwd=str(CLIENTS_DIR.parent),
+        )
+        if proc.returncode == 0:
+            log_event(
+                "watchdog",
+                "lock_contention",
+                "success",
+                detail="exit code 0, lock held by another instance",
+                file=__file__,
+                function="_watchdog_supervisor",
+            )
+        else:
+            log_event(
+                "watchdog",
+                "supervisor",
+                "failure",
+                detail=f"exit code {proc.returncode}",
+                file=__file__,
+                function="_watchdog_supervisor",
+            )
+        time.sleep(_WATCHDOG_RESPAWN_DELAY_SECONDS)
+
+
+def _start_watchdog() -> None:
+    thread = threading.Thread(target=_watchdog_supervisor, daemon=True)
+    thread.start()
+
+
 def main() -> None:
     """Start the CoS agent."""
     from app.config import HEALTH_CHECK_CONTACT_ID
@@ -104,6 +203,8 @@ def main() -> None:
 
     send_operator_alert("CoS Agent is online.")
     log_event("cos_agent", "startup", "success", file=__file__, function="main")
+
+    _start_watchdog()
 
     # Start scheduler
     scheduler = SimpleScheduler()

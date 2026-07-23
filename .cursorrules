@@ -1,6 +1,6 @@
 # COS_Deploy — BrightWork Chief of Staff Agent
 # Built by MKTNG.co (Scott Eggert) for Ben Olsen, BrightWork Realty Advocates
-# Last updated: June 28, 2026 (post-refactor)
+# Last updated: July 23, 2026
 # Mirrors CLAUDE.md — keep both files in sync when requirements change.
 
 ---
@@ -58,6 +58,14 @@ The system now has four isolated layers with Pydantic contracts between them.
 Scheduled jobs (morning digest, pre-appointment brief) bypass this chain.
 They live in core/scheduler.py and call tools/ directly.
 They do not produce RoutedIntent or HandlerResult.
+
+[FUB webhooks] --> tools/webhook_server.py --> tools/activity_feed.py
+                                                      |
+                                                      v
+                                              core/scheduler.py (digest)
+
+tools/watchdog.py runs as a subprocess of core/main.py (not supervisord).
+It monitors scheduled job effect via logs/scheduler_state.json.
 
 ---
 
@@ -163,10 +171,10 @@ COS_Deploy/
 │   ├── config.py               # Env var loader — all config flows from here
 │   └── schemas.py              # Pydantic layer contracts
 ├── core/
-│   ├── main.py                 # Entry point: wires transport + scheduler + router
+│   ├── main.py                 # Entry point: wires transport + scheduler + router + watchdog
 │   ├── transport.py            # Telegram long-poll — no logic
 │   ├── router.py               # Haiku intent classifier + ConversationBuffer
-│   └── scheduler.py            # Scheduled jobs with JSON last_run persistence
+│   └── scheduler.py            # Scheduled jobs with atomic JSON state persistence
 ├── handlers/
 │   ├── brief.py                # brief_request
 │   ├── generative.py           # draft_communication + draft_outreach
@@ -176,6 +184,7 @@ COS_Deploy/
 ├── services/
 │   └── fub_client.py           # requests.Session + urllib3 retry (3 retries, 2x backoff)
 ├── tools/                      # Framework-agnostic pure Python
+│   ├── activity_feed.py        # Webhook-captured inbound activity, feeds the digest
 │   ├── appointments.py
 │   ├── calendar_stub.py        # NEVER rename — see naming rules below
 │   ├── draft_communication.py  # Imports voice context from tools/voice.py
@@ -186,10 +195,12 @@ COS_Deploy/
 │   ├── hot_leads.py
 │   ├── logger.py
 │   ├── telegram.py
-│   └── voice.py                # Single source of truth for Ben's voice
+│   ├── voice.py                # Single source of truth for Ben's voice
+│   ├── watchdog.py             # Deadman's switch + error classification (subprocess of core/main)
+│   └── webhook_server.py       # FUB webhook receiver (supervisor: webhook-server)
 ├── agents/
 │   └── crewai/
-│       ├── crew.py             # Brief generation via CrewAI (unchanged)
+│       ├── crew.py             # Brief generation via CrewAI (LIVE — imported by handlers/brief.py)
 │       └── config/
 │           ├── agents.yaml     # Model strings live here, not in Python files
 │           └── tasks.yaml
@@ -199,10 +210,23 @@ COS_Deploy/
 │       ├── fub-config.yaml
 │       ├── scheduler_config.json
 │       ├── communication_prefs.json
-│       └── knowledge/
+│       ├── knowledge/
+│       └── sequences/          # Sequence copy (runtime reads templates via FUB, not these files directly)
 ├── scripts/
-│   └── push_fub_templates.py
-├── logs/                       # gitignored
+│   ├── audit_action_plan_templates.py
+│   └── discover_activity.py
+├── _retired/                   # July 23, 2026 retirement — NOT on import path (see below)
+│   ├── README.md
+│   ├── agents/crewai/
+│   │   ├── bot.py
+│   │   └── main.py
+│   └── tools/
+│       ├── intent_router.py
+│       └── scheduler.py
+├── platform/                   # Architecture and playbook docs (not runtime code)
+├── logs/                       # gitignored (scheduler_state.json, process logs)
+├── mcp_server.py               # MCP API server (supervisor: mcp-server)
+├── push_fub_templates.py       # One-off FUB template push utility
 ├── CLAUDE.md                   # Canonical requirements doc (mirrors .cursorrules)
 ├── .cursorrules                # This file
 ├── README.md
@@ -211,12 +235,21 @@ COS_Deploy/
 └── requirements.txt
 ```
 
-Dead files (scheduled deletion June 30, 2026 after 48-hour clean runtime):
-- agents/crewai/bot.py
-- agents/crewai/main.py
-- tools/intent_router.py
+### Retired code (July 23, 2026)
 
-Do not edit these files. They are not running. They are dead weight pending cleanup.
+Moved to `_retired/` (not deleted):
+- `_retired/agents/crewai/bot.py`
+- `_retired/agents/crewai/main.py`
+- `_retired/tools/scheduler.py`
+- `_retired/tools/intent_router.py`
+
+Still LIVE (do not retire):
+- `agents/crewai/crew.py` and `agents/crewai/config/*.yaml` — imported by `handlers/brief.py`
+
+`_retired/` is not on the import path. Never edit it. Never read it as a reference
+for how the system behaves. The stale `bot.py` caused repeated misdiagnosis: it
+registered a duplicate `morning_digest` with a hardcoded 8:30 that was never running.
+That is why it was retired.
 
 ---
 
@@ -266,6 +299,21 @@ in production. No autonomous writes. No exceptions.
 ### Always filter to Ben
 Every FUB operation filters to assignedTo: Ben Olsen (userId: 1).
 
+### Suppression tag enforcement
+Suppression tags are enforced at BOTH the sequence-enrollment path and the digest
+activity-surfacing path. A tag that suppresses marketing must also suppress the
+contact from surfacing in briefs. These are separate code paths and wiring only
+one is a defect.
+
+Current suppression tags:
+- Unsubscribed and Bounced (email hard stops)
+- #NeverMail (direct mail)
+- Realtor (competitor and industry contacts, no marketing enrollment, no brief surfacing)
+
+OPEN (July 23, 2026): Realtor is not yet enforced in either path. Identified when
+a competing realtor tagged Realtor generated a lead alert draft and a "fallback
+sequence eligible" note, and appeared in the client's morning digest.
+
 ### Known FUB platform constraints (permanent, confirmed)
 - /v1/emails returns [CONTENT HIDDEN] on all records. Email body is inaccessible.
   There is no permission setting that changes this. This is not a bug to fix.
@@ -296,6 +344,46 @@ The agent drafts. Ben sends.
 - Ben never sees a technical error. Every handler defines a plain English fallback.
 - Operator channel is separate from Ben's bot. Never cross them.
 - Every scheduled job logs success or failure via log_event().
+- Silent skips are prohibited. Any code path that DECLINES to run a scheduled job
+  must log the reason (window not reached, already sent for today, past catch-up cutoff).
+  A job that decides not to act must leave a trace. Rationale: an 18-day morning digest
+  outage (July 3 to July 22, 2026) went undetected because the skip path logged nothing.
+- Absence monitoring is required, not just failure monitoring. tools/watchdog.py
+  implements a deadman's switch: for each scheduled job, if no run is recorded for
+  today's Pacific date past a configured backstop, alert the operator. Failure-only
+  monitoring cannot detect a job that never runs.
+- Monitoring must verify effect, not log lines. The deadman confirms the morning digest
+  by reading last_morning_digest_date in logs/scheduler_state.json, NOT by matching a
+  success log line. Rationale: a hollow 4ms run logged success without sending anything
+  and falsely cleared the deadman on July 23, 2026. Any future health check must assert
+  the work actually happened.
+- The deadman backstop must fall AFTER the catch-up cutoff. Backstop earlier than
+  scheduled time plus catch_up_hours produces false alarms for a digest still eligible
+  to send.
+
+---
+
+## SCHEDULER RULES
+
+- All scheduler time math uses zoneinfo America/Los_Angeles. Never a static UTC offset.
+  timezone_offset_hours remains in config for backward compatibility but must never be
+  used for window math. Rationale: a static -7 offset breaks at the November DST change
+  and made time comparisons impossible to reason about.
+- Daily job fire gates are DATE-based, never hour-based. Gate on whether the job has
+  already run for today's Pacific date. Rationale: an hour-based gate
+  (last_morning_digest_hour) was never reset after a successful run, permanently
+  disabling the digest.
+- Daily jobs use a catch-up window (scheduled time to scheduled time plus catch_up_hours),
+  not a narrow fixed-minute window. Rationale: a five-minute window on a 60-second tick
+  loop meant any restart or slow tick across that window silently skipped the job for
+  the whole day.
+- Scheduled jobs never send late. Past the catch-up cutoff, skip and log.
+- State writes must be atomic: write to a temp file in logs/, flush, os.fsync, then
+  os.replace. Rationale: a non-atomic write corrupted scheduler_state.json and disabled
+  both scheduled jobs.
+- No code path may save a stale state object over a newer write. Any job that saves state
+  must reload it immediately before saving. Rationale: interval jobs held a state object
+  loaded at the top of the tick and overwrote the digest's date write from the same tick.
 
 ---
 
@@ -328,7 +416,6 @@ The agent drafts. Ben sends.
 ## WHAT IS NOT BUILT YET (DO NOT STUB OR SUGGEST)
 
 Unless explicitly scoped in a prompt, do not build or mention:
-- FastAPI webhook gateway
 - Docker / containerization
 - Redis session cache
 - ChromaDB or vector knowledge base
@@ -349,22 +436,39 @@ Unless explicitly scoped in a prompt, do not build or mention:
 ## DEPLOYMENT
 
 The agent runs under supervisord on the Droplet.
-Always use `supervisorctl restart cos-agent` for production restarts.
+Always use `supervisorctl restart cos-agent` for production restarts of the agent.
 Never run `python -m core.main` directly on the Droplet in production.
 
-supervisord conf: /etc/supervisor/conf.d/cos-agent.conf
-command: /root/COS_Deploy/venv/bin/python -m core.main
+cos-agent is the only supervisord entry point for the agent itself.
+tools/watchdog.py runs as a subprocess spawned by core/main.py, not as its own
+supervisord process.
+
+Supervisord processes (verified /etc/supervisor/conf.d/):
+
+| Process | Command |
+|---|---|
+| cos-agent | /root/COS_Deploy/venv/bin/python -m core.main |
+| mcp-server | /root/COS_Deploy/venv/bin/python /root/COS_Deploy/mcp_server.py |
+| webhook-server | /root/COS_Deploy/venv/bin/python /root/COS_Deploy/tools/webhook_server.py |
+| cloudflared | /usr/local/bin/cloudflared tunnel --config /root/.cloudflared/config.yml run cos-mcp |
+
+cos-agent conf: /etc/supervisor/conf.d/cos-agent.conf
 directory: /root/COS_Deploy
 
 Rollback tag: pre-refactor-june28 (commit 4f4d826)
 Post-refactor tag: post-refactor-june28 (commit 0b09b4e)
 
-To roll back:
-1. git checkout pre-refactor-june28
-2. Edit supervisord command back to:
-   /root/COS_Deploy/venv/bin/python /root/COS_Deploy/agents/crewai/bot.py
-3. Edit supervisord directory back to: /root/COS_Deploy/agents/crewai
-4. supervisorctl restart cos-agent
+To roll back to the pre-refactor architecture:
+1. git checkout pre-refactor-june28 (commit 4f4d826)
+2. Restore /etc/supervisor/conf.d/cos-agent.conf from that commit (command and
+   directory are defined in the checked-out tree, not in _retired/)
+3. supervisorctl reread && supervisorctl update && supervisorctl restart cos-agent
+
+To return to post-refactor:
+1. git checkout post-refactor-june28 (commit 0b09b4e) or main
+2. Restore cos-agent.conf to: command /root/COS_Deploy/venv/bin/python -m core.main,
+   directory /root/COS_Deploy
+3. supervisorctl reread && supervisorctl update && supervisorctl restart cos-agent
 
 ---
 
@@ -378,6 +482,41 @@ Ben Olsen decides the name. This is blocked on his input.
 
 ---
 
+## Known Failure Pattern: ProxyError During Watchdog Restart Bursts
+
+If FUB or OpenRouter calls fail with "ProxyError... Tunnel connection 
+failed: 403" and no proxy is configured anywhere (checked: env vars, 
+supervisor config, /etc/environment, codebase grep — confirmed clean 
+July 3, 2026), check for a watchdog supervisor burst in cos_agent.log 
+around the same timestamp (rapid start/failure/start cycles, <1s apart).
+
+Root cause (fixed July 3, 2026): orphaned tools.watchdog subprocesses 
+survived core.main restarts because SIGTERM doesn't propagate to 
+reparented children. The orphan held watchdog.lock, causing new 
+supervisor threads to spawn/fail/respawn in a tight loop. This loop 
+correlated 100% with the two observed ProxyError incidents, though 
+the exact mechanism (likely fd/socket exhaustion from rapid subprocess 
+forking, misreported by urllib3 as a proxy error) was not directly 
+confirmed.
+
+Fix: _terminate_stale_watchdog_processes() in core/main.py now SIGTERMs 
+any orphaned tools.watchdog process before each spawn attempt, and a 
+2-second respawn delay was added. If ProxyError recurs, check first 
+whether this fix regressed or whether a new orphan-causing path exists 
+before assuming it's a real proxy/network issue.
+
+## Known Failure Pattern: Unexplained morning_digest fire
+
+On 2026-07-23 at 18:13:33 UTC (11:13 Pacific), core/scheduler.py::_tick
+logged a morning_digest start and success 4ms apart with empty detail. No FUB
+sub-logs, no Telegram send, no state write. The committed window gate at that
+time required hour == 8 and could not have matched hour 11. The running process
+had been up since 2026-07-22 15:58 UTC, so a file saved to disk 8 seconds before
+the event could not have altered its in-memory code. Cause remains UNRESOLVED.
+If a scheduled job fires outside its configured window again, treat this as a
+recurrence and investigate the loaded code of the running process, not the code
+on disk.
+
 ## KEY FILE REFERENCE
 
 | Need | File |
@@ -388,6 +527,7 @@ Ben Olsen decides the name. This is blocked on his input.
 | Telegram polling | core/transport.py |
 | Intent routing | core/router.py |
 | Scheduled jobs | core/scheduler.py |
+| Scheduler state persistence | logs/scheduler_state.json |
 | Brief handler | handlers/brief.py |
 | Draft/generative handler | handlers/generative.py |
 | Hot leads handler | handlers/hot_leads.py |
@@ -397,11 +537,15 @@ Ben Olsen decides the name. This is blocked on his input.
 | FUB reads | tools/fub.py |
 | FUB activity/context | tools/fub_activity.py |
 | FUB writes | tools/fub_write.py |
+| Webhook activity feed | tools/activity_feed.py |
+| FUB webhook server | tools/webhook_server.py |
+| Deadman's switch | tools/watchdog.py |
 | Appointments | tools/appointments.py |
 | Voice context | tools/voice.py |
 | Logging | tools/logger.py |
 | Health reporter | tools/health.py |
 | Telegram send | tools/telegram.py |
+| MCP API server | mcp_server.py |
 | Ben's FUB topology | clients/ben-olsen/fub-config.yaml |
 | Agent identity | clients/ben-olsen/soul.yaml |
 | Scheduler timing | clients/ben-olsen/scheduler_config.json |

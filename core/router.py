@@ -21,11 +21,38 @@ from typing import Any
 
 import requests
 
-from app.config import OPENROUTER_API_KEY, OPENROUTER_URL, HAIKU_MODEL, LOGS_DIR
+from app.config import (
+    HAIKU_MODEL,
+    LOGS_DIR,
+    OPENROUTER_API_KEY,
+    OPENROUTER_URL,
+    OPERATOR_TELEGRAM_CHAT_ID,
+    TELEGRAM_MONITOR_CHAT_ID,
+)
 from app.schemas import InboundMessage, RoutedIntent
 from tools.logger import log_event
 
 STATUS_PATTERN = re.compile(r"^(?:/)?status(?:\s+(\d+))?$", re.IGNORECASE)
+DIGEST_TEST_PATTERN = re.compile(
+    r"^(?:/)?(?:digesttest|testdigest)$|^trigger\s+test\s+digest$",
+    re.IGNORECASE,
+)
+
+
+def _admin_chat_ids() -> set[str]:
+    return {
+        cid
+        for cid in (
+            str(TELEGRAM_MONITOR_CHAT_ID),
+            str(OPERATOR_TELEGRAM_CHAT_ID),
+        )
+        if cid
+    }
+
+
+def is_admin_chat(chat_id: str) -> bool:
+    """Return True when chat_id is monitor or operator admin channel."""
+    return chat_id in _admin_chat_ids()
 
 _INTENTS = """
 brief_request - user wants a contact brief, profile, or lookup by name or ID; includes "look up", "find", "what's X's address"
@@ -35,8 +62,8 @@ draft_outreach - user wants outreach drafted for one or all cold hot leads; enti
 draft_communication - user wants to draft an email, text, or note to someone; entity is the full contact name if provided; type is email/sms/note
 status_check - user wants recent log output
 greeting - hello, hi, checking in
-identity_query - asking what the agent is or does
-help_request - asking for commands or help
+identity_query - asking who or what the agent is as an entity, not what it can do; examples: "who are you", "what is this thing", "what are you called"
+help_request - asking what it can do or how to do something; examples: "what can you do", "how do I draft an email", "can you text someone for me", "I don't know what this does", "how do I use you"
 unknown - anything else
 """
 
@@ -110,15 +137,23 @@ def classify_intent(message: InboundMessage, buffer: ConversationBuffer) -> Rout
     Returns a RoutedIntent. Never raises -- falls back to intent_type='unknown'
     on any failure.
     """
-    status_match = STATUS_PATTERN.match(message.raw_text.strip())
-    if status_match:
-        lines = status_match.group(1) or "50"
-        return RoutedIntent(
-            original_message=message,
-            intent_type="status_check",
-            entity=lines,
-            confidence=1.0,
-        )
+    if is_admin_chat(message.chat_id):
+        status_match = STATUS_PATTERN.match(message.raw_text.strip())
+        if status_match:
+            lines = status_match.group(1) or "50"
+            return RoutedIntent(
+                original_message=message,
+                intent_type="status_check",
+                entity=lines,
+                confidence=1.0,
+            )
+
+        if DIGEST_TEST_PATTERN.match(message.raw_text.strip()):
+            return RoutedIntent(
+                original_message=message,
+                intent_type="digest_test",
+                confidence=1.0,
+            )
 
     recent = buffer.recent(3)
     context_lines = []

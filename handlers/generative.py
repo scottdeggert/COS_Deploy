@@ -17,13 +17,36 @@ FALLBACK_MESSAGE = (
     "https://app.followupboss.com"
 )
 
-HELP_REPLY = (
-    "Here's what I can do:\n"
-    "* brief [name] or [ID] -- pull a contact brief\n"
-    "* draft an email to [name] about [topic]\n"
-    "* hot leads -- see your warm pipeline going cold\n"
-    "* status -- check recent agent log"
+_CAPABILITIES_MISSING_REPLY = (
+    "I don't have that information yet, it's worth asking Scott about. "
+    "Do you want me to flag it for him?"
 )
+
+
+def _capabilities_path():
+    return CLIENTS_DIR / CLIENT_ID / "knowledge" / "capabilities.md"
+
+
+def _load_capabilities() -> str | None:
+    """Read capabilities.md at request time. Returns None if missing or empty."""
+    path = _capabilities_path()
+    try:
+        text = path.read_text(encoding="utf-8").strip()
+    except OSError as exc:
+        log_event(
+            "generative", "load_capabilities", "failure",
+            detail=str(exc),
+            file=__file__, function="_load_capabilities",
+        )
+        return None
+    if not text:
+        log_event(
+            "generative", "load_capabilities", "failure",
+            detail="capabilities.md is empty",
+            file=__file__, function="_load_capabilities",
+        )
+        return None
+    return text
 
 
 def _load_soul_config() -> dict:
@@ -55,7 +78,28 @@ def handle_identity(intent: RoutedIntent) -> HandlerResult:
 
 def handle_help(intent: RoutedIntent) -> HandlerResult:
     """Handle help_request intents."""
-    return HandlerResult(success=True, telegram_output=HELP_REPLY)
+    message = intent.original_message.raw_text
+    capabilities = _load_capabilities()
+    if capabilities is None:
+        send_operator_alert(
+            "help_request handler: capabilities.md missing, empty, or unreadable"
+        )
+        reply = chat_reply(
+            f"Ben asked what you can do or how to use you: '{message}'. "
+            f"You do not have your capabilities reference loaded. "
+            f"Respond with this meaning in your own words, warmly and briefly: "
+            f"'{_CAPABILITIES_MISSING_REPLY}'"
+        )
+        return HandlerResult(success=True, telegram_output=reply)
+
+    reply = chat_reply(
+        f"Ben asked what you can do or how to use you: '{message}'. "
+        "Answer using ONLY the capabilities reference below. "
+        "Do not invent features not listed there. "
+        "Plain language, Ben's point of view, concise.\n\n"
+        f"Capabilities reference:\n{capabilities}"
+    )
+    return HandlerResult(success=True, telegram_output=reply)
 
 
 def handle_fallback(intent: RoutedIntent) -> HandlerResult:

@@ -41,6 +41,7 @@ class RoutedIntent(BaseModel):
         "hot_leads",
         "hot_leads_list",
         "status_check",
+        "digest_test",
         "greeting",
         "identity_query",
         "help_request",

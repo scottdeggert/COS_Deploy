@@ -12,7 +12,12 @@ from __future__ import annotations
 import time
 from typing import Callable
 
-from app.config import CLIENT_ID, TELEGRAM_CHAT_ID, TELEGRAM_MONITOR_CHAT_ID
+from app.config import (
+    CLIENT_ID,
+    OPERATOR_TELEGRAM_CHAT_ID,
+    TELEGRAM_CHAT_ID,
+    TELEGRAM_MONITOR_CHAT_ID,
+)
 from app.schemas import InboundCallback, InboundMessage
 from tools.logger import log_event
 from tools.telegram import (
@@ -64,6 +69,10 @@ def poll(
     """
     configured_chat_id = str(TELEGRAM_CHAT_ID)
     monitor_chat_id = str(TELEGRAM_MONITOR_CHAT_ID)
+    operator_chat_id = str(OPERATOR_TELEGRAM_CHAT_ID)
+    allowed_chat_ids = {
+        cid for cid in (configured_chat_id, monitor_chat_id, operator_chat_id) if cid
+    }
     offset = _drain_stale_updates()
 
     from tools.telegram import send_long_message
@@ -77,7 +86,7 @@ def poll(
             message = extract_message(update)
             if message:
                 chat_id = message["chat_id"]
-                if chat_id in (configured_chat_id, monitor_chat_id):
+                if chat_id in allowed_chat_ids:
                     text = message["text"]
                     ts = int(time.time())
 

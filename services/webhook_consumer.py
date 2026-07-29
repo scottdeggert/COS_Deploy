@@ -42,8 +42,7 @@ def _dispatch_payload(payload: dict) -> None:
 
 def run_consumer() -> None:
     init_db()
-    # Residual risk: if Telegram send succeeds but the process dies before
-    # _mark_notified(), reclaim replay can still duplicate Ben's alert.
+    # Residual risk: if Telegram send succeeds but the process dies before _mark_notified(), reclaim replay can still duplicate Ben's alert.
     reclaimed = reclaim_all_processing()
     if reclaimed:
         log_event(

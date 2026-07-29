@@ -16,7 +16,7 @@ from typing import Any
 import requests
 import uvicorn
 from dotenv import load_dotenv
-from fastapi import BackgroundTasks, FastAPI, Header, HTTPException, Request
+from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import JSONResponse
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -25,8 +25,9 @@ if str(ROOT) not in sys.path:
 
 load_dotenv(ROOT / ".env")
 
-from app.config import CLIENT_ID, CLIENTS_DIR
-from services.fub_client import configure_events_rate_limit, fub_get
+from app.config import CLIENT_ID, CLIENTS_DIR, LEAD_ALERT_PROCESSING_STALE_SECONDS
+from services.fub_client import fub_get
+from services.webhook_db import enqueue_event
 from tools.fub import get_contact_by_id, get_recent_activity
 from tools.fub_write import add_note_to_contact, add_tags_to_contact
 from tools.logger import log_event
@@ -81,7 +82,6 @@ def _load_lead_alert_config() -> dict[str, int]:
 
 
 _LEAD_ALERT_CONFIG = _load_lead_alert_config()
-configure_events_rate_limit(_LEAD_ALERT_CONFIG["events_rate_limit_per_10s"])
 
 app = FastAPI()
 _fallback_timers: dict[str, threading.Timer] = {}
@@ -187,6 +187,81 @@ def _mark_notified(contact_id: str) -> None:
         state = _load_state()
         state.setdefault("notified", {})[contact_id] = datetime.now(timezone.utc).isoformat()
         _save_state(state)
+
+
+def _lead_alert_draft_exists(contact_id: str) -> bool:
+    with _state_lock:
+        state = _load_state()
+        return contact_id in state.get("drafts", {})
+
+
+def _begin_lead_alert_processing(contact_id: str) -> bool:
+    """Claim in-flight processing slot. False if another worker is active."""
+    now = datetime.now(timezone.utc)
+    with _state_lock:
+        state = _load_state()
+        processing = state.setdefault("processing", {})
+        existing = processing.get(contact_id)
+        if existing:
+            try:
+                started = _parse_iso_timestamp(str(existing))
+                elapsed = (now - started).total_seconds()
+            except (ValueError, TypeError):
+                elapsed = LEAD_ALERT_PROCESSING_STALE_SECONDS
+            if elapsed < LEAD_ALERT_PROCESSING_STALE_SECONDS:
+                return False
+        processing[contact_id] = now.isoformat()
+        _save_state(state)
+    return True
+
+
+def _clear_lead_alert_processing(contact_id: str) -> None:
+    with _state_lock:
+        state = _load_state()
+        processing = state.setdefault("processing", {})
+        if contact_id in processing:
+            processing.pop(contact_id, None)
+            _save_state(state)
+
+
+def _try_resend_stored_lead_alert(contact_id: str) -> bool:
+    """Resend Telegram from stored draft after a crash between store and send."""
+    with _state_lock:
+        state = _load_state()
+        draft = state.get("drafts", {}).get(contact_id)
+        contact = state.get("contacts", {}).get(contact_id)
+    if not draft or not contact:
+        return False
+    if _is_recently_notified(contact_id):
+        return False
+
+    card_contact = {
+        "id": contact_id,
+        "firstName": contact.get("first_name", ""),
+        "lastName": contact.get("last_name", ""),
+        "phone": contact.get("phone", ""),
+        "source": contact.get("source", ""),
+    }
+    draft_email = str(draft.get("draft_email") or "")
+    source = str(contact.get("source") or "Unknown")
+    if not draft_email:
+        return False
+
+    if not send_lead_alert_card(card_contact, draft_email, form_notes="", source=source):
+        return False
+
+    _mark_notified(contact_id)
+    _schedule_fallback(contact_id)
+    log_event(
+        "lead_alert",
+        "handle_new_lead",
+        "success",
+        detail="resent alert from stored draft after reclaim",
+        contact_id=contact_id,
+        file=__file__,
+        function="_try_resend_stored_lead_alert",
+    )
+    return True
 
 
 def _last_activity_is_fresh(contact: dict) -> bool:
@@ -761,83 +836,113 @@ def handle_new_lead(contact_id: str, event_type: str = "peopleCreated") -> None:
             )
             return
 
-        contact = get_contact_by_id(contact_id)
-        if _assigned_to_name(contact) != ASSIGNED_TO_NAME:
+        if _try_resend_stored_lead_alert(contact_id):
+            return
+
+        if _lead_alert_draft_exists(contact_id):
             log_event(
                 "lead_alert",
                 "handle_new_lead",
                 "success",
-                detail="suppressed not assigned to Ben Olsen",
+                detail="suppressed duplicate draft already stored",
                 contact_id=contact_id,
                 file=__file__,
                 function="handle_new_lead",
             )
             return
 
-        first_name = contact.get("firstName", "")
-        events = get_recent_activity(contact_id, limit=25)
-        source = _resolve_source(contact, events)
-        source_key = source.lower()
-        if "finaloffer" in source_key:
-            source_context = (
-                "This lead is interested in selling their home via the Final Offer program. "
-                "They provided their property address."
-            )
-        elif "offmarket" in source_key:
-            source_context = (
-                "This lead is interested in off-market property listings as a buyer."
-            )
-        elif "quiet" in source_key:
-            source_context = (
-                "This lead wants to sell their home quietly without a public listing."
-            )
-        elif "seniors" in source_key:
-            source_context = "This lead is exploring senior real estate planning."
-        elif "relaunch" in source_key:
-            source_context = (
-                "This lead has an expired listing and wants to relaunch their home sale."
-            )
-        elif "mcc" in source_key:
-            source_context = (
-                "This lead is interested in Moraga Country Club area properties."
-            )
-        else:
-            source_context = "This lead submitted an inquiry form."
-        mcc_event_note = _extract_mcc_form_notes(events)
-        form_notes = mcc_event_note or _extract_form_notes(events)
-        _apply_mcc_tags(contact_id, mcc_event_note, source)
-        draft_email, draft_subject = _draft_first_touch_email(
-            first_name, source, form_notes, source_context
-        )
-        action_plan_id = _get_action_plan_id(source)
-        contact_for_state = {**contact, "source": source}
-        _store_lead_alert(
-            contact_id, draft_email, draft_subject, contact_for_state, action_plan_id
-        )
-        _mark_notified(contact_id)
-
-        if not send_lead_alert_card(contact, draft_email, form_notes, source=source):
+        if not _begin_lead_alert_processing(contact_id):
             log_event(
                 "lead_alert",
                 "handle_new_lead",
-                "failure",
-                detail="telegram send failed",
+                "success",
+                detail="suppressed duplicate processing fingerprint",
                 contact_id=contact_id,
                 file=__file__,
                 function="handle_new_lead",
             )
             return
 
-        _schedule_fallback(contact_id)
-        log_event(
-            "lead_alert",
-            "handle_new_lead",
-            "success",
-            detail=f"alert sent via {event_type}",
-            contact_id=contact_id,
-            file=__file__,
-            function="handle_new_lead",
-        )
+        try:
+            contact = get_contact_by_id(contact_id)
+            if _assigned_to_name(contact) != ASSIGNED_TO_NAME:
+                log_event(
+                    "lead_alert",
+                    "handle_new_lead",
+                    "success",
+                    detail="suppressed not assigned to Ben Olsen",
+                    contact_id=contact_id,
+                    file=__file__,
+                    function="handle_new_lead",
+                )
+                return
+
+            first_name = contact.get("firstName", "")
+            events = get_recent_activity(contact_id, limit=25)
+            source = _resolve_source(contact, events)
+            source_key = source.lower()
+            if "finaloffer" in source_key:
+                source_context = (
+                    "This lead is interested in selling their home via the Final Offer program. "
+                    "They provided their property address."
+                )
+            elif "offmarket" in source_key:
+                source_context = (
+                    "This lead is interested in off-market property listings as a buyer."
+                )
+            elif "quiet" in source_key:
+                source_context = (
+                    "This lead wants to sell their home quietly without a public listing."
+                )
+            elif "seniors" in source_key:
+                source_context = "This lead is exploring senior real estate planning."
+            elif "relaunch" in source_key:
+                source_context = (
+                    "This lead has an expired listing and wants to relaunch their home sale."
+                )
+            elif "mcc" in source_key:
+                source_context = (
+                    "This lead is interested in Moraga Country Club area properties."
+                )
+            else:
+                source_context = "This lead submitted an inquiry form."
+            mcc_event_note = _extract_mcc_form_notes(events)
+            form_notes = mcc_event_note or _extract_form_notes(events)
+            _apply_mcc_tags(contact_id, mcc_event_note, source)
+            draft_email, draft_subject = _draft_first_touch_email(
+                first_name, source, form_notes, source_context
+            )
+            action_plan_id = _get_action_plan_id(source)
+            contact_for_state = {**contact, "source": source}
+            _store_lead_alert(
+                contact_id, draft_email, draft_subject, contact_for_state, action_plan_id
+            )
+
+            if not send_lead_alert_card(contact, draft_email, form_notes, source=source):
+                log_event(
+                    "lead_alert",
+                    "handle_new_lead",
+                    "failure",
+                    detail="telegram send failed",
+                    contact_id=contact_id,
+                    file=__file__,
+                    function="handle_new_lead",
+                )
+                return
+
+            _mark_notified(contact_id)
+            _schedule_fallback(contact_id)
+            log_event(
+                "lead_alert",
+                "handle_new_lead",
+                "success",
+                detail=f"alert sent via {event_type}",
+                contact_id=contact_id,
+                file=__file__,
+                function="handle_new_lead",
+            )
+        finally:
+            _clear_lead_alert_processing(contact_id)
     except Exception as exc:
         log_event(
             "lead_alert",
@@ -1036,7 +1141,6 @@ def health() -> dict[str, str]:
 @app.post("/fub/webhook")
 async def fub_webhook(
     request: Request,
-    background_tasks: BackgroundTasks,
     x_fub_signature: str | None = Header(default=None, alias="X-FUB-Signature"),
     fub_signature: str | None = Header(default=None, alias="FUB-Signature"),
 ) -> JSONResponse:
@@ -1051,7 +1155,28 @@ async def fub_webhook(
         raise HTTPException(status_code=400, detail="Invalid JSON") from exc
 
     _log_inbound_webhook(payload)
-    background_tasks.add_task(_process_fub_event, payload)
+    try:
+        event_id = enqueue_event(payload)
+        log_event(
+            "webhook",
+            "enqueue",
+            "success",
+            detail=f"event_id={event_id} event={payload.get('event', 'unknown')}",
+            file=__file__,
+            function="fub_webhook",
+        )
+    except Exception as exc:
+        log_event(
+            "webhook",
+            "enqueue",
+            "failure",
+            detail=str(exc),
+            exc_info=exc,
+            file=__file__,
+            function="fub_webhook",
+        )
+        raise HTTPException(status_code=500, detail="Queue write failed") from exc
+
     return JSONResponse(status_code=200, content={"status": "accepted"})
 
 

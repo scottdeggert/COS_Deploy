@@ -43,6 +43,8 @@ HAIKU_MODEL: str = "anthropic/claude-haiku-4-5"
 # Follow Up Boss
 FUB_API_KEY: str = _require("FUB_API_KEY")
 FUB_BASE_URL: str = "https://api.followupboss.com/v1"
+FUB_X_SYSTEM: str = _require("FUB_X_SYSTEM")
+FUB_X_SYSTEM_KEY: str = _require("FUB_X_SYSTEM_KEY")
 
 # Telegram
 TELEGRAM_BOT_TOKEN: str = _require("TELEGRAM_BOT_TOKEN")
@@ -90,3 +92,47 @@ WEBHOOK_BURST_WINDOW_SECONDS: int = int(
 LEAD_ALERT_PROCESSING_STALE_SECONDS: int = int(
     _optional("LEAD_ALERT_PROCESSING_STALE_SECONDS", "300")
 )
+
+# Simulation guard: crash/idempotency tests must use an isolated queue DB
+COS_SIMULATE_WEBHOOK_FAILURE: bool = _optional(
+    "COS_SIMULATE_WEBHOOK_FAILURE", ""
+).lower() in ("1", "true", "yes")
+
+# Diagnostic probes: log FUB failures normally, suppress Telegram operator alerts
+COS_DIAGNOSTIC_MODE: bool = _optional("COS_DIAGNOSTIC_MODE", "").lower() in (
+    "1",
+    "true",
+    "yes",
+)
+
+# Cloud CMA (Phase 1: impromptu generation + tracked delivery)
+CLOUDCMA_API_KEY: str = _optional("CLOUDCMA_API_KEY")
+CLOUDCMA_WIDGET_URL: str = (
+    _optional("CLOUDCMA_WIDGET_URL") or "https://cloudcma.com/cmas/widget"
+)
+CMA_REDIRECT_BASE: str = (
+    _optional("CMA_REDIRECT_BASE") or "https://webhook.brightworkrealty.com"
+)
+_cma_pdf_archive = _optional("CMA_PDF_ARCHIVE_DIR")
+CMA_PDF_ARCHIVE_DIR: Path = (
+    Path(_cma_pdf_archive) if _cma_pdf_archive else REPO_ROOT / "logs" / "cma_pdfs"
+)
+
+# PostHog (optional interim analytics seam; no-op when unset)
+POSTHOG_API_KEY: str = _optional("POSTHOG_API_KEY")
+POSTHOG_HOST: str = _optional("POSTHOG_HOST")
+POSTHOG_PROJECT_ID: str = _optional("POSTHOG_PROJECT_ID")
+
+
+def require_test_webhook_queue_for_simulation() -> None:
+    """Refuse simulate-failure mode unless the queue DB path is a test file."""
+    if not COS_SIMULATE_WEBHOOK_FAILURE:
+        return
+    if "test" not in str(WEBHOOK_QUEUE_DB_PATH).lower():
+        raise EnvironmentError(
+            "COS_SIMULATE_WEBHOOK_FAILURE is set but WEBHOOK_QUEUE_DB_PATH does not "
+            f"contain 'test': {WEBHOOK_QUEUE_DB_PATH}. Use e.g. logs/webhook_queue.test.db"
+        )
+
+
+require_test_webhook_queue_for_simulation()

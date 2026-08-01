@@ -45,11 +45,30 @@ class RoutedIntent(BaseModel):
         "greeting",
         "identity_query",
         "help_request",
+        "cma_request",
         "unknown",
     ]
-    entity: Optional[str] = None        # contact name or ID extracted by Haiku
+    entity: Optional[str] = None        # contact name/ID, or address for cma_request
     comm_type: Optional[str] = None     # email | sms | note (generative intents)
     confidence: float = 0.0
+
+
+class CmaJob(BaseModel):
+    """Tracked Cloud CMA generation job. Persisted in logs/cma_registry.json."""
+    job_id: str
+    reply_chat_id: str
+    contact_id: Optional[str] = None
+    address: str
+    title: Optional[str] = None
+    token: str
+    status: Literal["pending", "ready", "failed"]
+    source_pdf_url: Optional[str] = None
+    archived_pdf_path: Optional[str] = None
+    tracking_url: Optional[str] = None
+    open_count: int = 0
+    created_at: str
+    ready_at: Optional[str] = None
+    last_opened_at: Optional[str] = None
 
 
 class HandlerResult(BaseModel):

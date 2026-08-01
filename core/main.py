@@ -22,7 +22,7 @@ from app.schemas import InboundCallback, InboundMessage
 from core.router import ConversationBuffer, classify_intent, is_admin_chat
 from core.scheduler import SimpleScheduler, morning_digest, pre_appointment_check
 from core.transport import poll
-from handlers import brief, generative, hot_leads, lead_alert, status
+from handlers import brief, cma, generative, hot_leads, lead_alert, status
 from tools.logger import log_event
 from tools.telegram import send_operator_alert
 
@@ -52,6 +52,10 @@ def _route_message(message: InboundMessage) -> str | None:
 
     if intent.intent_type in ("draft_outreach", "draft_communication"):
         result = generative.handle(intent)
+        return result.telegram_output
+
+    if intent.intent_type == "cma_request":
+        result = cma.handle(intent)
         return result.telegram_output
 
     if intent.intent_type == "status_check":

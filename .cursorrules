@@ -363,6 +363,21 @@ The agent drafts. Ben sends.
 
 ---
 
+## TESTING AND VERIFICATION
+
+- Ad-hoc investigation scripts that call live FUB (or any path that may log
+  status=failure) MUST set COS_DIAGNOSTIC_MODE=1 in the process environment
+  before the probe, and unset it after. Example:
+  `COS_DIAGNOSTIC_MODE=1 /root/COS_Deploy/venv/bin/python <<'PY' ...`
+- When set: log_event still writes to cos_agent.log (with diagnostic=true),
+  send_operator_alert skips Telegram, and tools/watchdog.py ignores those
+  lines. Production supervisord processes must never set this flag.
+- Crash/idempotency simulation of the webhook queue must use a separate SQLite
+  file whose path contains "test" (e.g. logs/webhook_queue.test.db) and must
+  not write to the production webhook_queue.db or lead_alert_state.json.
+
+---
+
 ## SCHEDULER RULES
 
 - All scheduler time math uses zoneinfo America/Los_Angeles. Never a static UTC offset.

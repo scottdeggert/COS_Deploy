@@ -64,6 +64,7 @@ status_check - user wants recent log output
 greeting - hello, hi, checking in
 identity_query - asking who or what the agent is as an entity, not what it can do; examples: "who are you", "what is this thing", "what are you called"
 help_request - asking what it can do or how to do something; examples: "what can you do", "how do I draft an email", "can you text someone for me", "I don't know what this does", "how do I use you"
+cma_request - user wants a CMA, comparative market analysis, comps, or home value report for a property address; entity is the full street address
 unknown - anything else
 """
 
@@ -71,10 +72,11 @@ _SYSTEM_PROMPT = f"""You are an intent classifier for a real estate agent's AI C
 Classify the user's message into exactly one intent from this list:
 {_INTENTS}
 
-Extract any entity (contact name, contact ID, or "all") if present.
+Extract any entity (contact name, contact ID, address, or "all") if present.
 For draft_communication: extract the full contact name as entity and the type (email/sms/note, default email).
 For brief_request: treat "look up", "find", "what's X's address", and similar lookup phrases as brief_request.
 For draft_outreach: extract the contact name as entity, or "all" if the user says "all", "everyone", "draft all".
+For cma_request: extract the full property street address as entity. Do not classify contact address lookups as cma_request.
 
 Respond ONLY with valid JSON in this exact format:
 {{"intent": "intent_name", "entity": "extracted entity or null", "type": "email or sms or note or null", "confidence": 0.0}}

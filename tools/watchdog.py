@@ -405,6 +405,10 @@ def is_error_line(line: str) -> bool:
     if entry.get("agent") in SKIP_AGENTS:
         return False
 
+    # COS_DIAGNOSTIC_MODE probes tag log lines so watchdog does not page the operator
+    if entry.get("diagnostic") is True:
+        return False
+
     status = str(entry.get("status", "")).lower()
     return status == "failure" or bool(ERROR_LEVEL_PATTERN.search(stripped))
 

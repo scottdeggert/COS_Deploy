@@ -4,7 +4,12 @@ import sys
 
 import requests
 
-from app.config import TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, TELEGRAM_MONITOR_CHAT_ID
+from app.config import (
+    COS_DIAGNOSTIC_MODE,
+    TELEGRAM_BOT_TOKEN,
+    TELEGRAM_CHAT_ID,
+    TELEGRAM_MONITOR_CHAT_ID,
+)
 from tools.logger import log_event
 
 TELEGRAM_API = "https://api.telegram.org"
@@ -119,6 +124,17 @@ def _monitor_chat_id() -> str | None:
 def send_operator_alert(message: str) -> None:
     """Send a plain-text alert to the monitor channel only. Never raises."""
     try:
+        if COS_DIAGNOSTIC_MODE:
+            log_event(
+                "monitoring",
+                "operator_alert",
+                "fallback",
+                detail="COS_DIAGNOSTIC_MODE set; Telegram operator alert skipped",
+                file=__file__,
+                function="send_operator_alert",
+            )
+            return
+
         chat_id = _monitor_chat_id()
         if not chat_id:
             log_event(

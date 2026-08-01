@@ -32,6 +32,8 @@ from app.config import (
     FUB_429_MAX_ATTEMPTS,
     FUB_API_KEY,
     FUB_BASE_URL,
+    FUB_X_SYSTEM,
+    FUB_X_SYSTEM_KEY,
 )
 from services.rate_limiter import acquire_fub_token, update_from_response
 from tools.logger import log_event
@@ -82,6 +84,12 @@ def _get_session() -> requests.Session:
 
     session = requests.Session()
     session.auth = (FUB_API_KEY, "")
+    session.headers.update(
+        {
+            "X-System": FUB_X_SYSTEM,
+            "X-System-Key": FUB_X_SYSTEM_KEY,
+        }
+    )
 
     retry_strategy = Retry(
         total=0,

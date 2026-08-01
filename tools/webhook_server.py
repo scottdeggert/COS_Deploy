@@ -7,17 +7,19 @@ import hashlib
 import hmac
 import json
 import os
+import re
 import sys
 import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
+from urllib.parse import urljoin
 
 import requests
 import uvicorn
 from dotenv import load_dotenv
 from fastapi import FastAPI, Header, HTTPException, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 
 ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
@@ -25,13 +27,29 @@ if str(ROOT) not in sys.path:
 
 load_dotenv(ROOT / ".env")
 
-from app.config import CLIENT_ID, CLIENTS_DIR, LEAD_ALERT_PROCESSING_STALE_SECONDS
+from app.config import (
+    CLIENT_ID,
+    CLIENTS_DIR,
+    CMA_PDF_ARCHIVE_DIR,
+    CMA_REDIRECT_BASE,
+    FUB_X_SYSTEM_KEY,
+    LEAD_ALERT_PROCESSING_STALE_SECONDS,
+    TELEGRAM_CHAT_ID,
+)
 from services.fub_client import fub_get
 from services.webhook_db import enqueue_event
+from tools.analytics import capture
+from tools.cma_registry import get_job, get_job_by_token, mark_failed, mark_ready, record_open
 from tools.fub import get_contact_by_id, get_recent_activity
 from tools.fub_write import add_note_to_contact, add_tags_to_contact
 from tools.logger import log_event
-from tools.telegram import BOT_TOKEN, CHAT_ID, TELEGRAM_API
+from tools.telegram import (
+    BOT_TOKEN,
+    CHAT_ID,
+    TELEGRAM_API,
+    send_inline_message,
+    send_operator_alert,
+)
 
 ASSIGNED_TO_NAME = "Ben Olsen"
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
@@ -323,11 +341,12 @@ def _log_inbound_webhook(payload: dict[str, Any]) -> None:
     )
 
 
-# FUB_WEBHOOK_SECRET must be set to the X-System-Key value used when
-# registering the FUB webhook, not a separate secret. The signature
-# algorithm is HMAC-SHA256(base64_encode(raw_body), x_system_key).
+# FUB_X_SYSTEM_KEY (app/config.py) serves two roles: outbound X-System-Key
+# header on all FUB API calls (via services/fub_client.py) and inbound
+# webhook signature verification here. The signature algorithm is
+# HMAC-SHA256(base64_encode(raw_body), x_system_key).
 def _verify_signature(raw_body: bytes, signature: str | None) -> bool:
-    secret = os.environ.get("FUB_WEBHOOK_SECRET", "")
+    secret = FUB_X_SYSTEM_KEY
     if not secret or not signature:
         return False
     expected = hmac.new(
@@ -1136,6 +1155,362 @@ def _process_fub_event(payload: dict) -> None:
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok", "service": "webhook"}
+
+
+_CMA_GATEWAY_TIMEOUT_SECONDS = 30
+_CMA_PDF_FETCH_TIMEOUT_SECONDS = 60
+_PDF_MAGIC = b"%PDF-"
+
+
+def _content_type_base(response: requests.Response) -> str:
+    raw = str(response.headers.get("Content-Type") or "")
+    return raw.split(";", 1)[0].strip().lower()
+
+
+def _parse_meta_refresh_url(html: str) -> str | None:
+    """Extract redirect target from a Cloud CMA HTML gateway meta-refresh page."""
+    for match in re.finditer(
+        r"<meta\b[^>]*(?:http-equiv\s*=\s*['\"]?refresh['\"]?[^>]*|"
+        r"content\s*=\s*['\"][^'\"]*['\"][^>]*http-equiv\s*=\s*['\"]?refresh['\"]?)[^>]*>",
+        html,
+        re.IGNORECASE,
+    ):
+        tag = match.group(0)
+        content_match = re.search(
+            r"\bcontent\s*=\s*['\"]([^'\"]+)['\"]",
+            tag,
+            re.IGNORECASE,
+        )
+        if not content_match:
+            continue
+        url_match = re.search(
+            r"url\s*=\s*(.+)",
+            content_match.group(1),
+            re.IGNORECASE,
+        )
+        if url_match:
+            return url_match.group(1).strip().strip("'\"")
+    return None
+
+
+def _fetch_cma_pdf_bytes(pdf_url: str) -> tuple[bytes, str, str]:
+    """Resolve and download CMA PDF bytes from Cloud CMA pdf_url.
+
+    Returns (pdf_bytes, effective_source_url, content_type).
+    """
+    gateway_resp = requests.get(pdf_url, timeout=_CMA_GATEWAY_TIMEOUT_SECONDS)
+    gateway_resp.raise_for_status()
+    gateway_ct = _content_type_base(gateway_resp)
+
+    if gateway_ct == "application/pdf":
+        return gateway_resp.content, pdf_url, gateway_ct
+
+    if gateway_ct == "text/html":
+        redirect_url = _parse_meta_refresh_url(gateway_resp.text)
+        if not redirect_url:
+            raise ValueError(
+                f"html response missing meta refresh redirect byte_len={len(gateway_resp.content)}"
+            )
+        resolved_url = urljoin(pdf_url, redirect_url)
+        pdf_resp = requests.get(resolved_url, timeout=_CMA_PDF_FETCH_TIMEOUT_SECONDS)
+        pdf_resp.raise_for_status()
+        return pdf_resp.content, resolved_url, _content_type_base(pdf_resp)
+
+    raise ValueError(
+        f"unexpected content-type: {gateway_ct or 'missing'} "
+        f"byte_len={len(gateway_resp.content)}"
+    )
+
+
+def _fail_cma_pdf_archive(
+    job_id: str,
+    detail: str,
+    *,
+    exc: Exception | None = None,
+) -> JSONResponse:
+    log_event(
+        "cma",
+        "callback",
+        "failure",
+        detail=f"job_id={job_id} {detail}",
+        exc_info=exc,
+        file=__file__,
+        function="cma_callback",
+    )
+    send_operator_alert(f"CMA callback PDF archive failed job_id={job_id} {detail}")
+    mark_failed(job_id)
+    return JSONResponse(status_code=500, content={"status": "error"})
+
+
+def _extract_cma_callback_fields(payload: dict[str, Any]) -> tuple[str, str, str | None]:
+    """Pull job_id, pdf_url, and optional edit_url from a Cloud CMA callback body."""
+    job_id = str(payload.get("job_id") or "").strip()
+    pdf_url = str(payload.get("pdf_url") or "").strip()
+    edit_raw = payload.get("edit_url")
+    edit_url = str(edit_raw).strip() if edit_raw else None
+    if edit_url == "":
+        edit_url = None
+    return job_id, pdf_url, edit_url
+
+
+def _format_cma_callback_payload_for_log(payload: dict[str, Any]) -> str:
+    """Serialize callback payload for logging. Strips api_key if present."""
+    safe = {
+        key: value
+        for key, value in payload.items()
+        if key.lower() not in {"api_key", "apikey"}
+    }
+    return json.dumps(safe, default=str)
+
+
+def _send_cma_ready_card(
+    address: str,
+    tracking_url: str,
+    edit_url: str | None,
+    chat_id: str,
+    job_id: str,
+) -> bool:
+    """Send a CMA ready card with View (and optional Edit) URL buttons."""
+    buttons = [{"text": "View", "url": tracking_url}]
+    if edit_url:
+        buttons.append({"text": "Edit", "url": edit_url})
+    reply_markup = {"inline_keyboard": [buttons]}
+    text = f"CMA ready for {address}\n\n{tracking_url}"
+    sent = send_inline_message(text, reply_markup=reply_markup, chat_id=chat_id)
+    if sent:
+        log_event(
+            "cma",
+            "ready_card",
+            "success",
+            detail=f"job_id={job_id}",
+            file=__file__,
+            function="_send_cma_ready_card",
+        )
+    else:
+        log_event(
+            "cma",
+            "ready_card",
+            "failure",
+            detail=f"job_id={job_id}",
+            file=__file__,
+            function="_send_cma_ready_card",
+        )
+    return sent
+
+
+def _resolve_cma_reply_chat_id(job, job_id: str) -> str:
+    """Return the job reply target, falling back for pre-fix legacy jobs."""
+    reply_chat_id = str(job.reply_chat_id or "").strip()
+    if reply_chat_id:
+        return reply_chat_id
+    log_event(
+        "cma",
+        "ready_card",
+        "fallback",
+        detail=f"missing reply_chat_id on legacy job job_id={job_id}",
+        file=__file__,
+        function="_resolve_cma_reply_chat_id",
+    )
+    return str(TELEGRAM_CHAT_ID)
+
+
+@app.post("/cma/callback")
+async def cma_callback(request: Request) -> JSONResponse:
+    """Receive Cloud CMA completion callback. Never 500 on unknown job_id.
+
+    Phase 2 TODO: FUB custom field writeback for tracking URL (Theresa).
+    Phase 2 TODO: CMA Delivery action plan enrollment (Theresa).
+    Phase 2 TODO: Auto-trigger on inbound seller leads with address.
+    Phase 2 TODO: cma.brightworkrealty.com subdomain (Scott / Cloudflare).
+    """
+    from urllib.parse import parse_qs
+
+    job_id = ""
+    pdf_url = ""
+    edit_url: str | None = None
+    try:
+        raw_body = await request.body()
+        payload: dict[str, Any] = {}
+        try:
+            parsed = json.loads(raw_body)
+            if isinstance(parsed, dict):
+                payload = parsed
+        except (json.JSONDecodeError, UnicodeDecodeError, TypeError, ValueError):
+            payload = {}
+        if not payload.get("job_id"):
+            try:
+                form_map = parse_qs(raw_body.decode("utf-8", errors="replace"), keep_blank_values=True)
+                payload = {k: (v[0] if v else "") for k, v in form_map.items()}
+            except Exception:
+                payload = {}
+        job_id, pdf_url, edit_url = _extract_cma_callback_fields(payload)
+    except Exception as exc:
+        log_event(
+            "cma",
+            "callback",
+            "failure",
+            detail=f"parse error: {exc}",
+            exc_info=exc,
+            file=__file__,
+            function="cma_callback",
+        )
+        return JSONResponse(status_code=400, content={"status": "bad_request"})
+
+    if not job_id:
+        return JSONResponse(status_code=404, content={"status": "not_found"})
+
+    job = get_job(job_id)
+    if job is None:
+        log_event(
+            "cma",
+            "callback",
+            "fallback",
+            detail=(
+                f"unknown job_id={job_id} "
+                f"payload={_format_cma_callback_payload_for_log(payload)}"
+            ),
+            file=__file__,
+            function="cma_callback",
+        )
+        return JSONResponse(status_code=404, content={"status": "not_found"})
+
+    if not pdf_url:
+        log_event(
+            "cma",
+            "callback",
+            "failure",
+            detail=f"missing pdf_url job_id={job_id}",
+            file=__file__,
+            function="cma_callback",
+        )
+        return JSONResponse(status_code=400, content={"status": "missing_pdf_url"})
+
+    try:
+        try:
+            pdf_bytes, effective_pdf_url, received_content_type = _fetch_cma_pdf_bytes(
+                pdf_url
+            )
+        except requests.RequestException as exc:
+            return _fail_cma_pdf_archive(
+                job_id,
+                f"pdf fetch error: {exc}",
+                exc=exc,
+            )
+        except ValueError as exc:
+            return _fail_cma_pdf_archive(job_id, str(exc), exc=exc)
+
+        if not pdf_bytes.startswith(_PDF_MAGIC):
+            return _fail_cma_pdf_archive(
+                job_id,
+                (
+                    f"invalid pdf bytes content_type={received_content_type or 'missing'} "
+                    f"byte_len={len(pdf_bytes)}"
+                ),
+            )
+
+        CMA_PDF_ARCHIVE_DIR.mkdir(parents=True, exist_ok=True)
+        archive_path = CMA_PDF_ARCHIVE_DIR / f"{job.token}.pdf"
+        archive_path.write_bytes(pdf_bytes)
+
+        tracking_url = f"{CMA_REDIRECT_BASE.rstrip('/')}/r/{job.token}"
+        updated = mark_ready(
+            job_id,
+            source_pdf_url=effective_pdf_url,
+            archived_pdf_path=str(archive_path),
+            tracking_url=tracking_url,
+        )
+        if updated is None:
+            return JSONResponse(status_code=404, content={"status": "not_found"})
+
+        _append_activity_feed({
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "event_type": "cma_ready",
+            "actor_type": "system",
+            "person_id": updated.contact_id or "",
+            "person_name": "",
+            "detail": f"job_id={job_id} address_len={len(updated.address)}",
+        })
+        log_event(
+            "cma",
+            "callback",
+            "success",
+            detail=f"job_id={job_id}",
+            contact_id=updated.contact_id or "",
+            file=__file__,
+            function="cma_callback",
+        )
+        reply_chat_id = _resolve_cma_reply_chat_id(updated, job_id)
+        _send_cma_ready_card(
+            updated.address, tracking_url, edit_url, reply_chat_id, job_id
+        )
+        return JSONResponse(status_code=200, content={"status": "ok"})
+    except Exception as exc:
+        log_event(
+            "cma",
+            "callback",
+            "failure",
+            detail=f"job_id={job_id}",
+            exc_info=exc,
+            file=__file__,
+            function="cma_callback",
+        )
+        return JSONResponse(status_code=500, content={"status": "error"})
+
+
+@app.get("/r/{token}", response_model=None)
+def cma_tracked_open(token: str):
+    """Serve archived CMA PDF and record the open. Never 500 on unknown token."""
+    job = get_job_by_token(token)
+    if job is None:
+        return JSONResponse(status_code=404, content={"status": "not_found"})
+
+    try:
+        capture(
+            "cma_opened",
+            {
+                "token": token,
+                "address": job.address,
+                "contact_id": job.contact_id,
+                "open_count": int(job.open_count or 0) + 1,
+            },
+        )
+    except Exception:
+        pass
+
+    updated = record_open(token)
+    if updated is None:
+        return JSONResponse(status_code=404, content={"status": "not_found"})
+
+    archive = updated.archived_pdf_path
+    if not archive:
+        return JSONResponse(status_code=404, content={"status": "not_found"})
+    path = Path(archive)
+    if not path.is_file():
+        log_event(
+            "cma",
+            "tracked_open",
+            "failure",
+            detail=f"missing archive token={token}",
+            file=__file__,
+            function="cma_tracked_open",
+        )
+        return JSONResponse(status_code=404, content={"status": "not_found"})
+
+    log_event(
+        "cma",
+        "tracked_open",
+        "success",
+        detail=f"token={token} open_count={updated.open_count}",
+        contact_id=updated.contact_id or "",
+        file=__file__,
+        function="cma_tracked_open",
+    )
+    return FileResponse(
+        path=path,
+        media_type="application/pdf",
+        filename=f"cma-{token}.pdf",
+        content_disposition_type="inline",
+    )
 
 
 @app.post("/fub/webhook")

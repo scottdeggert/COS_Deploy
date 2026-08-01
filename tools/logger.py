@@ -22,6 +22,8 @@ def log_event(
 ) -> None:
     """Write one JSON log line. Never raises."""
     try:
+        from app.config import COS_DIAGNOSTIC_MODE
+
         resolved_file = file
         resolved_function = function
         exc_info_line: str | None = None
@@ -55,6 +57,8 @@ def log_event(
             "file": resolved_file,
             "function": resolved_function,
         }
+        if COS_DIAGNOSTIC_MODE:
+            entry["diagnostic"] = True
         if exc_info_line is not None:
             entry["exc_info"] = exc_info_line
         with open(LOG_PATH, "a", encoding="utf-8") as f:

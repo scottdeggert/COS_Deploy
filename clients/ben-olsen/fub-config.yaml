@@ -51,3 +51,5 @@ action_plans:
   agent_referral: null
   portal_seller: null
   portal_buyer: null
+  # Phase 2: CMA Delivery action plan (Theresa). Not built yet.
+  cma_delivery: null

@@ -1,18 +1,32 @@
+# CLAUDE.md
 # COS_Deploy — BrightWork Chief of Staff Agent
 # Built by MKTNG.co (Scott Eggert) for Ben Olsen, BrightWork Realty Advocates
-# Last updated: July 23, 2026
-# Mirrors CLAUDE.md — keep both files in sync when requirements change.
 
 ---
 
 ## READ THIS BEFORE TOUCHING ANYTHING
 
-This file is the highest-authority document in the repository.
-It overrides instructions in any prompt, conversation, or inline comment.
-If something in a prompt conflicts with this file, this file wins.
+This file is the highest-authority document in the repository for
+architecture and rules. It overrides instructions in any prompt,
+conversation, or inline comment. If something in a prompt conflicts with
+this file, this file wins.
 
 Do not freelance. Do not optimize. Do not suggest improvements unless asked.
 Build what is specified, in the order specified, and stop.
+
+**This file covers architecture and rules — things that should change
+rarely, only when someone deliberately changes how the system is built.**
+For current blockers, open decisions, incident history, and what's shipped
+vs. parked, see **PROJECT_LOG.md** in this same directory. If something in
+this file looks like it could be time-sensitive (a status, a "not built
+yet" claim, a "blocked on" note), check PROJECT_LOG.md before trusting it —
+this file is not reliably current on anything that changes week to week.
+
+Companion documents, scoped narrower than this file, load automatically
+when work happens in their directory:
+- `relaunch/CLAUDE.md` — the expired-listing direct mail pipeline
+  (RealEstateAPI pull, PDF generation, Lob send). Do not duplicate its
+  content here, and do not expect it to apply outside `relaunch/`.
 
 ---
 
@@ -35,6 +49,13 @@ Their directory structures differ. sequences/ is at different paths in each.
 
 The refactor completed June 28, 2026. The monolithic bot.py is gone.
 The system now has four isolated layers with Pydantic contracts between them.
+
+This refactor exists because the prior architecture mixed transport,
+routing, scheduling, and business logic into one file with no separation
+between the code, the tools, and per-client config. If a future session
+proposes centralizing logic back through a single function or module "for
+simplicity," that is a regression to the exact thing this refactor fixed.
+Push back on it.
 
 ```
 [Telegram] --> core/transport.py
@@ -67,6 +88,12 @@ They do not produce RoutedIntent or HandlerResult.
 tools/watchdog.py runs as a subprocess of core/main.py (not supervisord).
 It monitors scheduled job effect via logs/scheduler_state.json.
 
+The `relaunch/` pipeline (direct mail: expired listings) is a separate,
+independently-triggered module. It does not go through this chain — it has
+no Telegram inbound routing of its own beyond one scoped callback exception
+(see Telegram Callback Routing, below). See `relaunch/CLAUDE.md` for its
+internal structure.
+
 ---
 
 ## LAYER SEPARATION RULES — NON-NEGOTIABLE
@@ -80,6 +107,15 @@ in the previous architecture. Enforce them unconditionally.
 - Passes InboundMessage or InboundCallback to router/handlers only.
 - If you find yourself adding a conditional to transport.py, stop.
   That logic belongs in router.py or a handler.
+- **Exception, narrowly scoped:** the Ben-only callback gate
+  (`cb_chat_id == configured_chat_id`) must never be widened to accept
+  other chat IDs. If a new feature needs a callback from a different chat
+  (e.g. the operator channel), add a separate, explicit check alongside the
+  gate — matched on both chat ID and a callback_data prefix specific to
+  that feature — rather than loosening what the shared gate itself accepts.
+  This pattern is already in use for `relaunch_send:` callbacks from
+  `OPERATOR_TELEGRAM_CHAT_ID`. Follow it for any future operator-facing
+  callback rather than inventing a new mechanism.
 
 ### Router layer (core/router.py)
 - Classifies intent via Haiku. Returns RoutedIntent.
@@ -115,7 +151,13 @@ in the previous architecture. Enforce them unconditionally.
 ### Config layer (app/config.py)
 - Single env var loader. All config flows from here.
 - No other module calls os.environ or os.getenv directly.
-- If you see os.environ.get() outside of app/config.py, that is a bug.
+- If you see os.environ.get() outside of app/config.py, that is a bug —
+  **with one scoped exception:** `relaunch/` loads its own `.env` directly
+  (`trigger.py`, `mail/send.py`), by design, not by drift. This keeps
+  `LOB_API_KEY`, a payment-capable and physical-mail-triggering credential,
+  out of `cos-agent`'s shared process environment entirely. Do not "fix"
+  this by routing it through `app/config.py` — that would undo the
+  isolation on purpose. See `relaunch/CLAUDE.md` for the reasoning.
 
 ### Schemas (app/schemas.py)
 - Pydantic contracts: InboundMessage, InboundCallback, RoutedIntent, HandlerResult.
@@ -145,6 +187,14 @@ tools, or services.
 If you find a FUB stage ID, a Telegram chat ID, a schedule time, or
 a realtor-specific string hardcoded anywhere outside clients/, that is a bug.
 
+**Known exception, not yet resolved:** `relaunch/` does not follow this
+pattern. `SENDER_NAME` / office address live in `relaunch/.env`, and
+`ACTIVE_CLIENT = "Ben"` is hardcoded in the REAPI pull config, neither
+under `clients/ben-olsen/`. This was acceptable for a single-tenant build
+and is now tracked debt — see PROJECT_LOG.md — that must be resolved
+before a second client's mail pipeline can be onboarded without duplicating
+or forking the relaunch codebase.
+
 ---
 
 ## ZERO-HARDCODING POLICY
@@ -168,7 +218,7 @@ Nothing configurable lives in source code. Full stop.
 ```
 COS_Deploy/
 ├── app/
-│   ├── config.py               # Env var loader — all config flows from here
+│   ├── config.py               # Env var loader — all config flows from here (see relaunch/ exception above)
 │   └── schemas.py              # Pydantic layer contracts
 ├── core/
 │   ├── main.py                 # Entry point: wires transport + scheduler + router + watchdog
@@ -212,6 +262,18 @@ COS_Deploy/
 │       ├── communication_prefs.json
 │       ├── knowledge/
 │       └── sequences/          # Sequence copy (runtime reads templates via FUB, not these files directly)
+├── relaunch/                   # Direct mail pipeline (expired listings). Own CLAUDE.md, own .env.
+│   ├── CLAUDE.md               # Pipeline-specific rules — read before touching this directory
+│   ├── pull/                   # RealEstateAPI extraction
+│   ├── scrub/                  # Eligibility filtering, entity detection
+│   ├── generate/                # PDF packet generation (OpenRouter/Sonnet)
+│   ├── mail/                   # Lob send
+│   ├── assets/                 # Static one-sheets, fonts, Ben bio PDF
+│   ├── config/                 # Market benchmarks, community flags
+│   ├── batches/                # Per-batch working directories
+│   ├── logs/                   # Pipeline + run logs
+│   ├── tests/                  # Regression tests (entity detection, salutation)
+│   └── trigger.py              # Cron entrypoint
 ├── scripts/
 │   ├── audit_action_plan_templates.py
 │   └── discover_activity.py
@@ -227,10 +289,10 @@ COS_Deploy/
 ├── logs/                       # gitignored (scheduler_state.json, process logs)
 ├── mcp_server.py               # MCP API server (supervisor: mcp-server)
 ├── push_fub_templates.py       # One-off FUB template push utility
-├── CLAUDE.md                   # Canonical requirements doc (mirrors .cursorrules)
-├── .cursorrules                # This file
+├── CLAUDE.md                   # This file
+├── PROJECT_LOG.md              # Roadmap, open items, incident history — check this for anything time-sensitive
 ├── README.md
-├── .env                        # gitignored, never commit
+├── .env                        # gitignored, never commit. No LOB_API_KEY — see relaunch/.env
 ├── .env.example
 └── requirements.txt
 ```
@@ -247,9 +309,7 @@ Still LIVE (do not retire):
 - `agents/crewai/crew.py` and `agents/crewai/config/*.yaml` — imported by `handlers/brief.py`
 
 `_retired/` is not on the import path. Never edit it. Never read it as a reference
-for how the system behaves. The stale `bot.py` caused repeated misdiagnosis: it
-registered a duplicate `morning_digest` with a hardcoded 8:30 that was never running.
-That is why it was retired.
+for how the system behaves. See PROJECT_LOG.md for why `bot.py` was retired.
 
 ---
 
@@ -288,13 +348,26 @@ All LLM inference routes through OpenRouter (https://openrouter.ai/api/v1).
 Never call the Anthropic API directly for inference.
 Haiku for classification. Sonnet for anything Ben reads.
 
+### Never verify a running process's environment via /proc
+`/proc/<pid>/environ` reflects exec-time environment only. It does not
+update when code calls `load_dotenv()` after startup, and will give a
+false pass for credential-isolation checks. Verify from file contents and
+load order instead.
+
 ---
 
 ## FUB RULES
 
 ### Write confirmation required
 All FUB write operations require explicit human confirmation before executing
-in production. No autonomous writes. No exceptions.
+in production. No autonomous writes. No exceptions — including automated
+writes that fire as a *consequence* of an already-confirmed human action.
+(Example: `relaunch/`'s dormant-contact tagging fires automatically on a
+successful Lob send, but that send only happens after an explicit human tap
+on an approval button. The confirmation is the tap; the tag write is a
+downstream effect of it, not a second autonomous decision. If you build
+something similar, make sure the causal chain back to a human action is
+that direct and undeniable before treating a write as "confirmed.")
 
 ### Always filter to Ben
 Every FUB operation filters to assignedTo: Ben Olsen (userId: 1).
@@ -310,9 +383,7 @@ Current suppression tags:
 - #NeverMail (direct mail)
 - Realtor (competitor and industry contacts, no marketing enrollment, no brief surfacing)
 
-OPEN (July 23, 2026): Realtor is not yet enforced in either path. Identified when
-a competing realtor tagged Realtor generated a lead alert draft and a "fallback
-sequence eligible" note, and appeared in the client's morning digest.
+Current enforcement status of each tag, and any open defects: see PROJECT_LOG.md.
 
 ### Known FUB platform constraints (permanent, confirmed)
 - /v1/emails returns [CONTENT HIDDEN] on all records. Email body is inaccessible.
@@ -334,7 +405,8 @@ sequence eligible" note, and appeared in the client's morning digest.
 
 ### No autonomous outbound
 All client-facing sends require Ben to review and approve first.
-The agent drafts. Ben sends.
+The agent drafts. Ben sends. (`relaunch/`'s direct mail follows the same
+principle with a different reviewer — see that module's CLAUDE.md.)
 
 ---
 
@@ -346,20 +418,20 @@ The agent drafts. Ben sends.
 - Every scheduled job logs success or failure via log_event().
 - Silent skips are prohibited. Any code path that DECLINES to run a scheduled job
   must log the reason (window not reached, already sent for today, past catch-up cutoff).
-  A job that decides not to act must leave a trace. Rationale: an 18-day morning digest
-  outage (July 3 to July 22, 2026) went undetected because the skip path logged nothing.
+  A job that decides not to act must leave a trace.
 - Absence monitoring is required, not just failure monitoring. tools/watchdog.py
   implements a deadman's switch: for each scheduled job, if no run is recorded for
   today's Pacific date past a configured backstop, alert the operator. Failure-only
   monitoring cannot detect a job that never runs.
-- Monitoring must verify effect, not log lines. The deadman confirms the morning digest
-  by reading last_morning_digest_date in logs/scheduler_state.json, NOT by matching a
-  success log line. Rationale: a hollow 4ms run logged success without sending anything
-  and falsely cleared the deadman on July 23, 2026. Any future health check must assert
-  the work actually happened.
+- Monitoring must verify effect, not log lines. Any health check must assert the
+  work actually happened (e.g. reading a persisted state value the job itself
+  writes), not just that a success line was logged.
 - The deadman backstop must fall AFTER the catch-up cutoff. Backstop earlier than
-  scheduled time plus catch_up_hours produces false alarms for a digest still eligible
+  scheduled time plus catch_up_hours produces false alarms for a job still eligible
   to send.
+
+For the specific incidents that established each of these rules, see
+PROJECT_LOG.md — several were fixed exactly once and must not regress.
 
 ---
 
@@ -375,6 +447,8 @@ The agent drafts. Ben sends.
 - Crash/idempotency simulation of the webhook queue must use a separate SQLite
   file whose path contains "test" (e.g. logs/webhook_queue.test.db) and must
   not write to the production webhook_queue.db or lead_alert_state.json.
+- There is no staging bot. All testing runs against the same token and
+  process serving Ben. This is a known structural risk — see PROJECT_LOG.md.
 
 ---
 
@@ -382,23 +456,20 @@ The agent drafts. Ben sends.
 
 - All scheduler time math uses zoneinfo America/Los_Angeles. Never a static UTC offset.
   timezone_offset_hours remains in config for backward compatibility but must never be
-  used for window math. Rationale: a static -7 offset breaks at the November DST change
-  and made time comparisons impossible to reason about.
+  used for window math. A static offset breaks at DST changes and makes time
+  comparisons impossible to reason about.
 - Daily job fire gates are DATE-based, never hour-based. Gate on whether the job has
-  already run for today's Pacific date. Rationale: an hour-based gate
-  (last_morning_digest_hour) was never reset after a successful run, permanently
-  disabling the digest.
+  already run for today's Pacific date. An hour-based gate that never resets after a
+  successful run can permanently disable a job.
 - Daily jobs use a catch-up window (scheduled time to scheduled time plus catch_up_hours),
-  not a narrow fixed-minute window. Rationale: a five-minute window on a 60-second tick
-  loop meant any restart or slow tick across that window silently skipped the job for
-  the whole day.
+  not a narrow fixed-minute window. A five-minute window on a 60-second tick loop means
+  any restart or slow tick across that window silently skips the job for the whole day.
 - Scheduled jobs never send late. Past the catch-up cutoff, skip and log.
 - State writes must be atomic: write to a temp file in logs/, flush, os.fsync, then
-  os.replace. Rationale: a non-atomic write corrupted scheduler_state.json and disabled
-  both scheduled jobs.
+  os.replace. A non-atomic write can corrupt state and disable scheduled jobs entirely.
 - No code path may save a stale state object over a newer write. Any job that saves state
-  must reload it immediately before saving. Rationale: interval jobs held a state object
-  loaded at the top of the tick and overwrote the digest's date write from the same tick.
+  must reload it immediately before saving, or a concurrent job's write can be silently
+  overwritten by one loaded earlier in the same tick.
 
 ---
 
@@ -425,6 +496,8 @@ The agent drafts. Ben sends.
 - .env structure (add keys, never remove)
 - All FUB write confirmation patterns
 - Operator/Ben channel separation
+- The Ben-only Telegram callback gate in core/transport.py (see Layer
+  Separation Rules — add scoped exceptions alongside it, never widen it)
 
 ---
 
@@ -436,8 +509,6 @@ Unless explicitly scoped in a prompt, do not build or mention:
 - ChromaDB or vector knowledge base
 - PostHog integration
 - CloudCMA integration
-- RealEstateAPI.com / BatchData
-- Lob.com direct mail
 - Calendly integration (native FUB sync status unconfirmed)
 - Google Calendar integration (blocked: Side RE OAuth policy)
 - Bluedot transcript processing
@@ -446,44 +517,12 @@ Unless explicitly scoped in a prompt, do not build or mention:
 - Communication memory write path (stub exists, read path only)
 - Multi-agent Supervisor delegation
 
----
-
-## DEPLOYMENT
-
-The agent runs under supervisord on the Droplet.
-Always use `supervisorctl restart cos-agent` for production restarts of the agent.
-Never run `python -m core.main` directly on the Droplet in production.
-
-cos-agent is the only supervisord entry point for the agent itself.
-tools/watchdog.py runs as a subprocess spawned by core/main.py, not as its own
-supervisord process.
-
-Supervisord processes (verified /etc/supervisor/conf.d/):
-
-| Process | Command |
-|---|---|
-| cos-agent | /root/COS_Deploy/venv/bin/python -m core.main |
-| mcp-server | /root/COS_Deploy/venv/bin/python /root/COS_Deploy/mcp_server.py |
-| webhook-server | /root/COS_Deploy/venv/bin/python /root/COS_Deploy/tools/webhook_server.py |
-| cloudflared | /usr/local/bin/cloudflared tunnel --config /root/.cloudflared/config.yml run cos-mcp |
-
-cos-agent conf: /etc/supervisor/conf.d/cos-agent.conf
-directory: /root/COS_Deploy
-
-Rollback tag: pre-refactor-june28 (commit 4f4d826)
-Post-refactor tag: post-refactor-june28 (commit 0b09b4e)
-
-To roll back to the pre-refactor architecture:
-1. git checkout pre-refactor-june28 (commit 4f4d826)
-2. Restore /etc/supervisor/conf.d/cos-agent.conf from that commit (command and
-   directory are defined in the checked-out tree, not in _retired/)
-3. supervisorctl reread && supervisorctl update && supervisorctl restart cos-agent
-
-To return to post-refactor:
-1. git checkout post-refactor-june28 (commit 0b09b4e) or main
-2. Restore cos-agent.conf to: command /root/COS_Deploy/venv/bin/python -m core.main,
-   directory /root/COS_Deploy
-3. supervisorctl reread && supervisorctl update && supervisorctl restart cos-agent
+**This list must be updated in the same commit that ships any of these
+features.** It went stale once already — RealEstateAPI.com/BatchData and
+Lob.com direct mail were both listed here after they had already shipped as
+`relaunch/`, discovered only when someone compared this file against actual
+running code. Before trusting this list, check PROJECT_LOG.md's most recent
+shipped-feature entries.
 
 ---
 
@@ -493,44 +532,37 @@ The agent has no confirmed name. Do not assign one.
 Do not reference "Scout" (retired placeholder).
 Use "Chief of Staff" in user-facing strings.
 Use "cos_agent" in code identifiers.
-Ben Olsen decides the name. This is blocked on his input.
+Ben Olsen decides the name. Current status: see PROJECT_LOG.md.
 
 ---
+---
 
-## Known Failure Pattern: ProxyError During Watchdog Restart Bursts
+## LOGGING RULE — READ BEFORE ENDING ANY SESSION
 
-If FUB or OpenRouter calls fail with "ProxyError... Tunnel connection 
-failed: 403" and no proxy is configured anywhere (checked: env vars, 
-supervisor config, /etc/environment, codebase grep — confirmed clean 
-July 3, 2026), check for a watchdog supervisor burst in cos_agent.log 
-around the same timestamp (rapid start/failure/start cycles, <1s apart).
+Use /log-entry (see .claude/skills/log-entry/) to write to PROJECT_LOG.md.
+Do this unprompted, as the last step of any session, if what you did
+clears any of these:
 
-Root cause (fixed July 3, 2026): orphaned tools.watchdog subprocesses 
-survived core.main restarts because SIGTERM doesn't propagate to 
-reparented children. The orphan held watchdog.lock, causing new 
-supervisor threads to spawn/fail/respawn in a tight loop. This loop 
-correlated 100% with the two observed ProxyError incidents, though 
-the exact mechanism (likely fd/socket exhaustion from rapid subprocess 
-forking, misreported by urllib3 as a proxy error) was not directly 
-confirmed.
+1. Would a future session waste real investigation time rediscovering
+   this, if it happened again?
+2. Could a future session make a change that looks locally reasonable but
+   is actually wrong, because it doesn't have this context?
+3. Does this open or close something already on record as OPEN in
+   PROJECT_LOG.md?
+4. Does it change what's true anywhere in CLAUDE.md that makes a
+   point-in-time claim (the "not built yet" list, a directory structure,
+   an "OPEN" or "blocked on" note)?
 
-Fix: _terminate_stale_watchdog_processes() in core/main.py now SIGTERMs 
-any orphaned tools.watchdog process before each spawn attempt, and a 
-2-second respawn delay was added. If ProxyError recurs, check first 
-whether this fix regressed or whether a new orphan-causing path exists 
-before assuming it's a real proxy/network issue.
+If none apply — a fix with an obvious cause, a refactor with no behavior
+change, a copy edit — don't log it. When genuinely unsure, log it anyway.
+A low-value entry costs a few lines to read past. A missing one costs a
+future session real time, or a real mistake, rediscovering something you
+already knew.
 
-## Known Failure Pattern: Unexplained morning_digest fire
+If item 4 applies, update CLAUDE.md itself in the same pass, not just the
+log. This is exactly how the "not built yet" list went stale once already.
 
-On 2026-07-23 at 18:13:33 UTC (11:13 Pacific), core/scheduler.py::_tick
-logged a morning_digest start and success 4ms apart with empty detail. No FUB
-sub-logs, no Telegram send, no state write. The committed window gate at that
-time required hour == 8 and could not have matched hour 11. The running process
-had been up since 2026-07-22 15:58 UTC, so a file saved to disk 8 seconds before
-the event could not have altered its in-memory code. Cause remains UNRESOLVED.
-If a scheduled job fires outside its configured window again, treat this as a
-recurrence and investigate the loaded code of the running process, not the code
-on disk.
+---
 
 ## KEY FILE REFERENCE
 
@@ -561,8 +593,10 @@ on disk.
 | Health reporter | tools/health.py |
 | Telegram send | tools/telegram.py |
 | MCP API server | mcp_server.py |
+| Direct mail pipeline | relaunch/ (own CLAUDE.md) |
 | Ben's FUB topology | clients/ben-olsen/fub-config.yaml |
 | Agent identity | clients/ben-olsen/soul.yaml |
 | Scheduler timing | clients/ben-olsen/scheduler_config.json |
 | Communication prefs | clients/ben-olsen/communication_prefs.json |
 | Brief generation (CrewAI) | agents/crewai/crew.py |
+| Project history, blockers, roadmap | PROJECT_LOG.md |

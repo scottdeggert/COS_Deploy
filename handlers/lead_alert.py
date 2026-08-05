@@ -6,8 +6,11 @@ import json
 import re
 from pathlib import Path
 
-from app.config import CLIENT_ID, LOGS_DIR
+import yaml
+
+from app.config import CLIENT_ID, CLIENTS_DIR, LOGS_DIR
 from app.schemas import HandlerResult, InboundCallback
+from tools.cma_registry import get_job
 from tools.fub import get_contact_by_id
 from tools.fub_write import add_note_to_contact, enroll_in_action_plan
 from tools.logger import log_event
@@ -16,6 +19,16 @@ from tools.telegram import send_operator_alert
 FALLBACK_MESSAGE = "Something went wrong processing that action. Check FUB directly."
 
 LEAD_ALERT_STATE_PATH = LOGS_DIR / "lead_alert_state.json"
+
+CMA_DELIVERY_NOT_CONFIGURED = (
+    "CMA delivery is not configured yet. The action plan ID is still unset in FUB config."
+)
+
+CMA_JOB_MISSING = "I could not find that CMA job. Generate a new CMA and try again."
+
+CMA_JOB_NO_CONTACT = (
+    "That CMA is not tied to a contact, so I cannot enroll a delivery sequence."
+)
 
 
 def _load_lead_alert_state() -> dict:
@@ -61,6 +74,84 @@ def _mark_lead_responded(contact_id: str) -> None:
     _save_lead_alert_state(state)
 
 
+def _get_cma_delivery_plan_id() -> int | None:
+    """Read action_plans.cma_delivery from client fub-config.yaml. No fallback."""
+    path = CLIENTS_DIR / CLIENT_ID / "fub-config.yaml"
+    try:
+        with path.open(encoding="utf-8") as handle:
+            data = yaml.safe_load(handle) or {}
+    except (OSError, yaml.YAMLError):
+        return None
+    plan_id = (data.get("action_plans") or {}).get("cma_delivery")
+    if plan_id is None:
+        return None
+    try:
+        return int(plan_id)
+    except (TypeError, ValueError):
+        return None
+
+
+def _handle_send_cma(job_id: str) -> HandlerResult:
+    """Enroll contact in CMA delivery action plan when Ben taps Send to homeowner."""
+    log_event(
+        "lead_alert", "send_cma", "start",
+        detail=f"job_id={job_id}",
+        file=__file__, function="_handle_send_cma",
+    )
+    job = get_job(job_id)
+    if job is None:
+        log_event(
+            "lead_alert", "send_cma", "fallback",
+            detail=f"job missing job_id={job_id}",
+            file=__file__, function="_handle_send_cma",
+        )
+        return HandlerResult(success=False, telegram_output=CMA_JOB_MISSING)
+
+    contact_id = (job.send_target_contact_id or job.contact_id or "").strip()
+    if not contact_id:
+        log_event(
+            "lead_alert", "send_cma", "fallback",
+            detail=f"no send target job_id={job_id}",
+            file=__file__, function="_handle_send_cma",
+        )
+        return HandlerResult(success=False, telegram_output=CMA_JOB_NO_CONTACT)
+
+    plan_id = _get_cma_delivery_plan_id()
+    if plan_id is None:
+        log_event(
+            "lead_alert", "send_cma", "fallback",
+            detail="cma_delivery not configured",
+            contact_id=contact_id,
+            file=__file__, function="_handle_send_cma",
+        )
+        return HandlerResult(
+            success=True,
+            telegram_output=CMA_DELIVERY_NOT_CONFIGURED,
+        )
+
+    fub_writes = 0
+    enroll_in_action_plan(contact_id, plan_id)
+    fub_writes += 1
+    add_note_to_contact(
+        contact_id,
+        "CMA Delivery: Ben approved via CoS agent, tracking link on file.",
+    )
+    fub_writes += 1
+    log_event(
+        "lead_alert", "send_cma", "success",
+        detail=f"job_id={job_id}",
+        contact_id=contact_id,
+        file=__file__, function="_handle_send_cma",
+    )
+    return HandlerResult(
+        success=True,
+        telegram_output=(
+            "CMA delivery sequence started. FUB will send the report to the homeowner."
+        ),
+        fub_writes=fub_writes,
+    )
+
+
 def handle_callback(callback: InboundCallback) -> HandlerResult:
     """Route inline keyboard actions for lead alert cards."""
     log_event(
@@ -77,10 +168,14 @@ def handle_callback(callback: InboundCallback) -> HandlerResult:
             error_details="Invalid callback data format",
         )
 
-    action, contact_id = data.split(":", 1)
+    action, remainder = data.split(":", 1)
     fub_writes = 0
 
     try:
+        if action == "send_cma":
+            return _handle_send_cma(remainder)
+
+        contact_id = remainder
         contact_info = _get_lead_contact(contact_id)
         first_name = contact_info.get("first_name", "")
         action_plan_id = contact_info.get("action_plan_id")

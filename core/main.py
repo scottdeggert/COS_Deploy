@@ -14,8 +14,11 @@ import os
 import signal
 import subprocess
 import sys
+import tempfile
 import threading
 import time
+from datetime import datetime, timezone
+from pathlib import Path
 
 from app.config import CLIENT_ID, CLIENTS_DIR, TELEGRAM_MONITOR_CHAT_ID
 from app.schemas import InboundCallback, InboundMessage
@@ -24,9 +27,222 @@ from core.scheduler import SimpleScheduler, morning_digest, pre_appointment_chec
 from core.transport import poll
 from handlers import brief, cma, generative, hot_leads, lead_alert, status
 from tools.logger import log_event
-from tools.telegram import send_operator_alert
+from tools.telegram import (
+    BOT_TOKEN,
+    TELEGRAM_API,
+    send_operator_alert,
+    session as telegram_session,
+)
 
 _buffer = ConversationBuffer()
+
+_PIPELINE_STATE_PATH = Path("/root/COS_Deploy/relaunch/logs/pipeline_state.json")
+_PIPELINE_LOGS_DIR = _PIPELINE_STATE_PATH.parent
+
+
+def _edit_telegram_message(
+    chat_id: str, message_id: int, text: str, *, remove_keyboard: bool = True
+) -> None:
+    """Edit an existing Telegram message. Best-effort; never raises."""
+    if not chat_id or not message_id:
+        return
+    url = f"{TELEGRAM_API}/bot{BOT_TOKEN}/editMessageText"
+    payload: dict = {
+        "chat_id": chat_id,
+        "message_id": message_id,
+        "text": text,
+    }
+    if remove_keyboard:
+        payload["reply_markup"] = {"inline_keyboard": []}
+    try:
+        telegram_session.post(url, json=payload, timeout=10)
+    except Exception:
+        pass
+
+
+def _load_pipeline_state() -> dict:
+    if not _PIPELINE_STATE_PATH.is_file():
+        return {}
+    try:
+        payload = json.loads(_PIPELINE_STATE_PATH.read_text(encoding="utf-8"))
+        return payload if isinstance(payload, dict) else {}
+    except (OSError, json.JSONDecodeError, TypeError):
+        return {}
+
+
+def _save_pipeline_state(state: dict) -> None:
+    """Atomic write: temp file in logs/, flush, fsync, os.replace."""
+    _PIPELINE_LOGS_DIR.mkdir(parents=True, exist_ok=True)
+    fd, temp_name = tempfile.mkstemp(
+        dir=str(_PIPELINE_LOGS_DIR),
+        prefix="pipeline_state.",
+        suffix=".tmp",
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(state, fh, indent=2)
+            fh.write("\n")
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(temp_name, _PIPELINE_STATE_PATH)
+    except Exception:
+        try:
+            os.unlink(temp_name)
+        except OSError:
+            pass
+        raise
+
+
+def _mark_send_initiated(batch_id: str) -> str | None:
+    """
+    Atomically record send_initiated_at for batch_id.
+    Returns prior timestamp if already initiated (caller must refuse), else None.
+    """
+    state = _load_pipeline_state()
+    prior_batch = str(state.get("send_initiated_batch_id") or "").strip()
+    prior_at = str(state.get("send_initiated_at") or "").strip()
+    if prior_batch == batch_id and prior_at:
+        return prior_at
+
+    # Reload immediately before save so we do not overwrite a newer write.
+    state = _load_pipeline_state()
+    prior_batch = str(state.get("send_initiated_batch_id") or "").strip()
+    prior_at = str(state.get("send_initiated_at") or "").strip()
+    if prior_batch == batch_id and prior_at:
+        return prior_at
+
+    initiated_at = datetime.now(timezone.utc).isoformat()
+    state["send_initiated_batch_id"] = batch_id
+    state["send_initiated_at"] = initiated_at
+    _save_pipeline_state(state)
+    return None
+
+
+def _format_send_outcome(completed: subprocess.CompletedProcess[str]) -> str:
+    stdout = completed.stdout or ""
+    stderr = completed.stderr or ""
+    combined = stdout + "\n" + stderr
+    ok_count = sum(
+        1 for line in stdout.splitlines() if line.lstrip().startswith("OK:")
+    )
+    fail_count = sum(
+        1 for line in stdout.splitlines() if line.lstrip().startswith("FAILED:")
+    )
+    run_log = ""
+    for line in combined.splitlines():
+        if "Run log written:" in line:
+            run_log = line.split("Run log written:", 1)[1].strip()
+        elif "run_log=" in line and not run_log:
+            run_log = line.split("run_log=", 1)[1].strip()
+
+    if completed.returncode == 0:
+        parts = [
+            "Relaunch send complete.",
+            f"Letters sent: {ok_count}",
+            f"Failures: {fail_count}",
+        ]
+        if run_log:
+            parts.append(f"Run log: {run_log}")
+        return "\n".join(parts)
+
+    # Refusal / hard failure (e.g. test_ key gate).
+    err_lines = [ln.strip() for ln in stderr.splitlines() if ln.strip()]
+    err_hint = err_lines[-1] if err_lines else f"exit={completed.returncode}"
+    parts = [
+        "Relaunch send failed.",
+        err_hint[:300],
+        f"Letters sent: {ok_count}",
+        f"Failures: {fail_count}",
+    ]
+    if run_log:
+        parts.append(f"Run log: {run_log}")
+    return "\n".join(parts)
+
+
+def _handle_relaunch_send(callback: InboundCallback) -> str | None:
+    """APPROVE SEND: live --send-all path with ack, idempotency, outcome edit."""
+    batch_id = (callback.data or "").split(":", 1)[1].strip()
+    if not batch_id:
+        return "Relaunch send ignored: missing batch id."
+
+    prior = _mark_send_initiated(batch_id)
+    if prior is not None:
+        refuse = f"Relaunch send already initiated at {prior}."
+        _edit_telegram_message(
+            callback.chat_id,
+            callback.message_id,
+            refuse,
+            remove_keyboard=True,
+        )
+        log_event(
+            "relaunch",
+            "approve_send",
+            "fallback",
+            detail=f"batch_id={batch_id} already_initiated_at={prior}",
+            file=__file__,
+            function="_handle_relaunch_send",
+        )
+        return refuse
+
+    # Show Sending... and strip the button before launch.
+    _edit_telegram_message(
+        callback.chat_id,
+        callback.message_id,
+        f"Relaunch batch {batch_id}\n\nSending...",
+        remove_keyboard=True,
+    )
+
+    cmd = [
+        "/root/COS_Deploy/venv/bin/python",
+        "-m",
+        "relaunch.mail.send",
+        "--batch-id",
+        batch_id,
+        "--send-all",
+    ]
+    log_event(
+        "relaunch",
+        "approve_send",
+        "start",
+        detail=f"batch_id={batch_id}",
+        file=__file__,
+        function="_handle_relaunch_send",
+    )
+    completed = subprocess.run(
+        cmd,
+        cwd="/root/COS_Deploy",
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    outcome = _format_send_outcome(completed)
+    _edit_telegram_message(
+        callback.chat_id,
+        callback.message_id,
+        outcome,
+        remove_keyboard=True,
+    )
+
+    if completed.returncode == 0:
+        log_event(
+            "relaunch",
+            "approve_send",
+            "success",
+            detail=f"batch_id={batch_id}",
+            file=__file__,
+            function="_handle_relaunch_send",
+        )
+    else:
+        log_event(
+            "relaunch",
+            "approve_send",
+            "failure",
+            detail=f"batch_id={batch_id} exit={completed.returncode}",
+            file=__file__,
+            function="_handle_relaunch_send",
+        )
+    # Outcome already edited onto the approve card; no second chat message.
+    return None
 
 
 def _route_message(message: InboundMessage) -> str | None:
@@ -92,7 +308,11 @@ def _route_message(message: InboundMessage) -> str | None:
 
 
 def _route_callback(callback: InboundCallback) -> str | None:
-    """Route inline keyboard button presses to lead_alert handler."""
+    """Route inline keyboard button presses to handlers."""
+    data = callback.data or ""
+    if data.startswith("relaunch_send:"):
+        return _handle_relaunch_send(callback)
+
     result = lead_alert.handle_callback(callback)
     return result.telegram_output if result.telegram_output else None
 

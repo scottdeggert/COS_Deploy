@@ -31,10 +31,15 @@ def _save_unlocked(registry: dict[str, Any]) -> None:
 
 
 def _normalize_job_raw(raw: dict[str, Any]) -> dict[str, Any]:
-    """Ensure legacy records validate after schema adds reply_chat_id."""
-    if "reply_chat_id" not in raw:
-        return {**raw, "reply_chat_id": ""}
-    return raw
+    """Ensure legacy records validate after schema field additions."""
+    out = dict(raw)
+    if "reply_chat_id" not in out:
+        out["reply_chat_id"] = ""
+    # Pre-pattern-3 contact jobs were always delivery-eligible.
+    if "send_target_contact_id" not in out:
+        contact_id = out.get("contact_id")
+        out["send_target_contact_id"] = contact_id if contact_id else None
+    return out
 
 
 def _validate_job_raw(raw: dict[str, Any], context: str) -> CmaJob | None:

@@ -1,0 +1,31 @@
+{
+  "counts": {
+    "input": 21,
+    "kept": 16,
+    "HELD_PENDING": 3,
+    "HELD_ENTITY": 2,
+    "HELD_AMBIGUOUS_OWNER": 0
+  },
+  "held": [
+    {
+      "address": "136 Lark Ct",
+      "reason": "HELD_PENDING"
+    },
+    {
+      "address": "1489 Sunnybrook Rd.",
+      "reason": "HELD_ENTITY"
+    },
+    {
+      "address": "3575 Springhill Rd",
+      "reason": "HELD_PENDING"
+    },
+    {
+      "address": "4120 Happy Valley Rd",
+      "reason": "HELD_ENTITY"
+    },
+    {
+      "address": "1413 Goleta Ct",
+      "reason": "HELD_PENDING"
+    }
+  ]
+}

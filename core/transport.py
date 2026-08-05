@@ -118,11 +118,22 @@ def poll(
                 cb_chat_id = str(
                     callback_query.get("message", {}).get("chat", {}).get("id", "")
                 )
-                if cb_chat_id == configured_chat_id:
+                cb_data = callback_query.get("data", "") or ""
+                # Ben-only gate for lead-alert (and other Ben-chat) callbacks. Unchanged.
+                route_callback = cb_chat_id == configured_chat_id
+                # Narrow exception: relaunch APPROVE SEND lives on the operator channel.
+                if (
+                    not route_callback
+                    and cb_data.startswith("relaunch_send:")
+                    and cb_chat_id == operator_chat_id
+                    and operator_chat_id
+                ):
+                    route_callback = True
+                if route_callback:
                     inbound_cb = InboundCallback(
                         chat_id=cb_chat_id,
                         callback_query_id=callback_id,
-                        data=callback_query.get("data", ""),
+                        data=cb_data,
                         message_id=callback_query.get("message", {}).get("message_id", 0),
                         client_id=CLIENT_ID,
                     )

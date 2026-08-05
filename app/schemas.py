@@ -26,7 +26,7 @@ class InboundCallback(BaseModel):
     """Inline keyboard button press from a Telegram message."""
     chat_id: str
     callback_query_id: str
-    data: str           # format: "action:contact_id", e.g. "approve:31735"
+    data: str           # format: "action:id", e.g. "approve:31735" or "send_cma:{job_id}"
     message_id: int     # ID of the original message with the keyboard
     client_id: str
 
@@ -48,7 +48,9 @@ class RoutedIntent(BaseModel):
         "cma_request",
         "unknown",
     ]
-    entity: Optional[str] = None        # contact name/ID, or address for cma_request
+    entity: Optional[str] = None        # contact name/ID, or address (cma_request: either)
+    entity_address: Optional[str] = None  # cma_request pattern 3: property address when entity is a contact
+    send_intent: Optional[bool] = None  # cma_request: delivery phrasing detected (send/email/get this to)
     comm_type: Optional[str] = None     # email | sms | note (generative intents)
     confidence: float = 0.0
 
@@ -57,7 +59,8 @@ class CmaJob(BaseModel):
     """Tracked Cloud CMA generation job. Persisted in logs/cma_registry.json."""
     job_id: str
     reply_chat_id: str
-    contact_id: Optional[str] = None
+    contact_id: Optional[str] = None  # filing contact for custom field write
+    send_target_contact_id: Optional[str] = None  # delivery recipient; None = no send button
     address: str
     title: Optional[str] = None
     token: str

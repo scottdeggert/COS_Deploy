@@ -1,0 +1,409 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Ben Olsen | BrightWork Realty Advocates</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@300;400;600;700;800&display=swap" rel="stylesheet" />
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --cyan:      #00aedb;
+      --yellow:    #ffe200;
+      --teal:      #005d7a;
+      --navy:      #1a2f45;
+      --white:     #ffffff;
+      --off-white: #f7fafc;
+      --muted:     #5a7184;
+      --border:    #d8edf4;
+    }
+
+    html, body {
+      width: 8.5in;
+      font-family: 'Montserrat', sans-serif;
+      color: var(--navy);
+      background: var(--white);
+      -webkit-print-color-adjust: exact;
+      print-color-adjust: exact;
+    }
+
+    .page {
+      width: 8.5in;
+      min-height: 11in;
+      padding: 0;
+      display: flex;
+      flex-direction: column;
+    }
+
+    /* ── HEADER ── */
+    .page-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 22px 52px 18px;
+      border-bottom: 2px solid var(--yellow);
+    }
+    .logo-lockup {
+      flex-shrink: 0;
+      line-height: 0;
+    }
+    .logo-lockup img {
+      display: block;
+      height: 66px;
+      width: auto;
+    }
+    .header-right {
+      font-size: 10px;
+      font-weight: 700;
+      color: var(--teal);
+      letter-spacing: 0.12em;
+      font-style: italic;
+    }
+
+    /* ── BODY ── */
+    .body {
+      flex: 1;
+      padding: 48px 52px 36px;
+      display: grid;
+      grid-template-columns: 200px 1fr;
+      gap: 48px;
+    }
+
+    /* ── LEFT ── */
+    .left-col {
+      display: flex;
+      flex-direction: column;
+      gap: 0;
+    }
+
+    .headshot-wrap {
+      width: 200px;
+      height: 240px;
+      background: var(--off-white);
+      border: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin-bottom: 24px;
+      overflow: hidden;
+    }
+    .headshot-wrap img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      object-position: top;
+      display: block;
+    }
+    .headshot-placeholder {
+      font-size: 10px;
+      font-weight: 500;
+      color: var(--muted);
+      letter-spacing: 0.08em;
+      text-align: center;
+      line-height: 1.7;
+      text-transform: uppercase;
+    }
+
+    .contact-section {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      padding-top: 4px;
+    }
+    .contact-item {
+      display: flex;
+      flex-direction: column;
+      gap: 1px;
+    }
+    .contact-label {
+      font-size: 8px;
+      font-weight: 700;
+      letter-spacing: 0.2em;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
+    .contact-value {
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--navy);
+      line-height: 1.5;
+    }
+    .contact-value.cyan { color: var(--cyan); }
+
+    .left-rule {
+      width: 100%;
+      height: 1px;
+      background: var(--border);
+      margin: 20px 0;
+    }
+
+    .accolades-label {
+      font-size: 8px;
+      font-weight: 700;
+      letter-spacing: 0.2em;
+      text-transform: uppercase;
+      color: var(--muted);
+      margin-bottom: 10px;
+    }
+    .accolade-list {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+    .accolade-item {
+      font-size: 11px;
+      font-weight: 400;
+      color: var(--navy);
+      line-height: 1.4;
+      padding-left: 12px;
+      position: relative;
+    }
+    .accolade-item::before {
+      content: '';
+      position: absolute;
+      left: 0;
+      top: 6px;
+      width: 4px;
+      height: 4px;
+      background: var(--cyan);
+      border-radius: 50%;
+    }
+
+    /* ── RIGHT ── */
+    .right-col {
+      display: flex;
+      flex-direction: column;
+      gap: 0;
+    }
+
+    .eyebrow {
+      font-size: 9px;
+      font-weight: 700;
+      letter-spacing: 0.22em;
+      text-transform: uppercase;
+      color: var(--cyan);
+      margin-bottom: 8px;
+    }
+
+    .name-block h1 {
+      font-size: 34px;
+      font-weight: 800;
+      color: var(--navy);
+      letter-spacing: -0.02em;
+      line-height: 1.05;
+    }
+    .name-block h1 span { color: var(--cyan); }
+
+    .title-line {
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--muted);
+      letter-spacing: 0.02em;
+      margin-top: 5px;
+    }
+
+    .rule {
+      width: 100%;
+      height: 1px;
+      background: var(--border);
+      margin: 20px 0;
+    }
+
+    .bio-intro {
+      font-size: 13px;
+      font-weight: 700;
+      color: var(--navy);
+      line-height: 1.6;
+      margin-bottom: 14px;
+    }
+
+    .bio-body {
+      font-size: 12px;
+      font-weight: 300;
+      color: var(--muted);
+      line-height: 1.9;
+      margin-bottom: 12px;
+    }
+
+    /* ── STAT ROW ── */
+    .stat-row {
+      display: flex;
+      gap: 0;
+      border-top: 1px solid var(--border);
+      border-bottom: 1px solid var(--border);
+      margin: 22px 0;
+    }
+    .stat {
+      flex: 1;
+      padding: 16px 0 16px 16px;
+      border-right: 1px solid var(--border);
+    }
+    .stat:last-child { border-right: none; }
+    .stat-number {
+      font-size: 22px;
+      font-weight: 800;
+      color: var(--cyan);
+      letter-spacing: -0.02em;
+      line-height: 1;
+      margin-bottom: 3px;
+    }
+    .stat-label {
+      font-size: 9px;
+      font-weight: 600;
+      color: var(--muted);
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      line-height: 1.4;
+    }
+
+    /* ── CLOSING BOX ── */
+    .closing-box {
+      border-left: 3px solid var(--cyan);
+      padding: 14px 18px;
+      background: var(--off-white);
+      margin-top: 4px;
+    }
+    .closing-box-label {
+      font-size: 8px;
+      font-weight: 700;
+      letter-spacing: 0.2em;
+      text-transform: uppercase;
+      color: var(--cyan);
+      margin-bottom: 6px;
+    }
+    .closing-box p {
+      font-size: 12px;
+      font-weight: 400;
+      color: var(--navy);
+      line-height: 1.75;
+    }
+
+    /* ── FOOTER ── */
+    .page-footer {
+      padding: 16px 52px;
+      border-top: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .footer-legal {
+      font-size: 9px;
+      font-weight: 300;
+      color: var(--muted);
+    }
+    .footer-dre {
+      font-size: 9px;
+      font-weight: 600;
+      color: var(--muted);
+      letter-spacing: 0.04em;
+    }
+
+    @media print {
+      html, body { width: 8.5in; }
+      .page { min-height: 11in; page-break-after: always; }
+    }
+  </style>
+</head>
+<body>
+<div class="page">
+
+  <div class="page-header">
+    <div class="logo-lockup">
+      <img src="logo.jpg" alt="BrightWork Realty Advocates" />
+    </div>
+    <span class="header-right">The Smart Way to Real Estate</span>
+  </div>
+
+  <div class="body">
+
+    <!-- LEFT -->
+    <div class="left-col">
+
+      <div class="headshot-wrap">
+        <img src="ben-olsen.png" alt="Ben Olsen, REALTOR" />
+      </div>
+
+      <div class="contact-section">
+        <div class="contact-item">
+          <span class="contact-label">Direct</span>
+          <span class="contact-value">(925) 255-9727</span>
+        </div>
+        <div class="contact-item">
+          <span class="contact-label">Email</span>
+          <span class="contact-value cyan">ben@brightworkrealty.com</span>
+        </div>
+        <div class="contact-item">
+          <span class="contact-label">Web</span>
+          <span class="contact-value">brightworkrealty.com</span>
+        </div>
+        <div class="contact-item">
+          <span class="contact-label">Office</span>
+          <span class="contact-value">455 Moraga Road, Suite I<br/>Moraga, CA 94556</span>
+        </div>
+      </div>
+
+      <div class="left-rule"></div>
+
+      <div class="accolades-label">The BrightWork Advantage</div>
+      <div class="accolade-list">
+        <div class="accolade-item">Buy Before You Sell</div>
+        <div class="accolade-item">BrightFlip Pre-Sale Improvements</div>
+        <div class="accolade-item">Final Offer Platform</div>
+        <div class="accolade-item">Zillow Showcase + homes.com Premium</div>
+        <div class="accolade-item">Off-Market Network</div>
+        <div class="accolade-item">Built to Close Clean</div>
+      </div>
+
+    </div>
+
+    <!-- RIGHT -->
+    <div class="right-col">
+
+      <div class="eyebrow">Your Listing Advisor</div>
+
+      <div class="name-block">
+        <h1>Ben <span>Olsen</span></h1>
+        <p class="title-line">Founding Partner | REALTOR &nbsp;&middot;&nbsp; BrightWork Realty Advocates &nbsp;&middot;&nbsp; DRE# 02014153</p>
+      </div>
+
+      <div class="rule"></div>
+
+      <p class="bio-intro">Ben founded BrightWork on a specific premise: the best outcomes are built before a home ever lists. With twenty years serving the East Bay's most competitive submarkets, he's developed a clear point of view on what separates a sale that closes well from one that doesn't, and the preparation, marketing, and negotiation strategy to act on it.</p>
+
+      <p class="bio-body">He entered the workforce at 14 in construction, a background that shapes how he thinks about pre-sale decisions, disclosure strategy, and what buyers actually scrutinize at inspection. That's a different lens than most agents carry into a listing consultation.</p>
+
+      <p class="bio-body">His approach to marketing is built on the same logic. Every campaign is designed for your home's specific buyer, not the average buyer. Portal strategy, campaign integration, and buyer targeting aren't add-ons at BrightWork. They're the baseline. Pre-sale prep, real fixes, and full disclosure before the home lists. The preparation is the negotiation.</p>
+
+      <div class="stat-row">
+        <div class="stat">
+          <div class="stat-number">20+</div>
+          <div class="stat-label">Years Serving<br/>Lamorinda</div>
+        </div>
+        <div class="stat">
+          <div class="stat-number">$1B+</div>
+          <div class="stat-label">Properties<br/>Sold</div>
+        </div>
+        <div class="stat">
+          <div class="stat-number">1,000+</div>
+          <div class="stat-label">Buyers &amp;<br/>Sellers</div>
+        </div>
+      </div>
+
+      <div class="closing-box">
+        <div class="closing-box-label">Why He Sent You This Packet</div>
+        <p>When a listing expires, Ben reviews it. Not to pitch you, but because after enough of them, the pattern of what goes wrong becomes clear. If you received this analysis, he looked at your specific property and has a specific point of view about what happened. That's the conversation he's offering. No listing agreement on the table. Just a review. He'll also walk you through programs that turn seller constraints into options, and show you what a transaction designed to get everyone to the closing table feeling good actually looks like.</p>
+      </div>
+
+    </div>
+  </div>
+
+  <div class="page-footer">
+    <span class="footer-legal">BrightWork Realty Advocates &nbsp;&middot;&nbsp; brightworkrealty.com &nbsp;&middot;&nbsp; Moraga &nbsp;&middot;&nbsp; Lafayette &nbsp;&middot;&nbsp; Orinda &nbsp;&middot;&nbsp; Walnut Creek &nbsp;&middot;&nbsp; Pleasant Hill</span>
+    <span class="footer-dre">DRE# 02014153</span>
+  </div>
+
+</div>
+</body>
+</html>

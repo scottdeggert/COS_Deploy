@@ -51,5 +51,6 @@ action_plans:
   agent_referral: null
   portal_seller: null
   portal_buyer: null
-  # Phase 2: CMA Delivery action plan (Theresa). Not built yet.
-  cma_delivery: null
+  # Phase 2: CMA Delivery one-step action plan (Theresa). Leave null until created.
+  # send_cma callback reads this value; do not hardcode a fallback elsewhere.
+  cma_delivery: 64

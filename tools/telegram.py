@@ -1,6 +1,9 @@
 """Telegram bot client for send/receive messaging."""
 
+from __future__ import annotations
+
 import sys
+from dataclasses import dataclass
 
 import requests
 
@@ -11,6 +14,17 @@ from app.config import (
     TELEGRAM_MONITOR_CHAT_ID,
 )
 from tools.logger import log_event
+
+
+@dataclass(frozen=True)
+class InlineSendResult:
+    """Result of send_inline_message. Truthy when Telegram accepted the send."""
+
+    ok: bool
+    error: str | None = None
+
+    def __bool__(self) -> bool:
+        return self.ok
 
 TELEGRAM_API = "https://api.telegram.org"
 BOT_TOKEN = TELEGRAM_BOT_TOKEN
@@ -84,7 +98,9 @@ def send_long_message(text: str, chat_id: str = None) -> None:
         send_message(chunk, chat_id=target)
 
 
-def send_inline_message(text: str, reply_markup: dict, chat_id: str = None) -> bool:
+def send_inline_message(
+    text: str, reply_markup: dict, chat_id: str = None
+) -> InlineSendResult:
     url = f"{TELEGRAM_API}/bot{BOT_TOKEN}/sendMessage"
     payload = {
         "chat_id": chat_id or CHAT_ID,
@@ -94,12 +110,14 @@ def send_inline_message(text: str, reply_markup: dict, chat_id: str = None) -> b
     try:
         resp = session.post(url, json=payload)
         if resp.ok:
-            return True
+            return InlineSendResult(ok=True)
+        body = (resp.text or "")[:200]
         print(f"sendMessage failed: {resp.status_code}", file=sys.stderr)
-        return False
+        return InlineSendResult(ok=False, error=body)
     except requests.RequestException as exc:
+        detail = str(exc)[:200]
         print(f"sendMessage error: {exc}", file=sys.stderr)
-        return False
+        return InlineSendResult(ok=False, error=detail)
 
 
 def _monitor_chat_id() -> str | None:

@@ -54,6 +54,24 @@ def is_admin_chat(chat_id: str) -> bool:
     """Return True when chat_id is monitor or operator admin channel."""
     return chat_id in _admin_chat_ids()
 
+
+def _coerce_optional_bool(value: Any) -> bool | None:
+    """Normalize Haiku send_intent to bool or None."""
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)) and value in (0, 1):
+        return bool(value)
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in ("true", "1", "yes"):
+            return True
+        if lowered in ("false", "0", "no"):
+            return False
+    return None
+
+
 _INTENTS = """
 brief_request - user wants a contact brief, profile, or lookup by name or ID; includes "look up", "find", "what's X's address"
 hot_leads - user asks about cooling hot leads in general
@@ -64,7 +82,7 @@ status_check - user wants recent log output
 greeting - hello, hi, checking in
 identity_query - asking who or what the agent is as an entity, not what it can do; examples: "who are you", "what is this thing", "what are you called"
 help_request - asking what it can do or how to do something; examples: "what can you do", "how do I draft an email", "can you text someone for me", "I don't know what this does", "how do I use you"
-cma_request - user wants a CMA, comparative market analysis, comps, or home value report for a property address; entity is the full street address
+cma_request - user wants a CMA, comparative market analysis, comps, or home value report; entity is a property street address, or a contact name or contact ID when Ben asks for a CMA for someone
 unknown - anything else
 """
 
@@ -76,10 +94,15 @@ Extract any entity (contact name, contact ID, address, or "all") if present.
 For draft_communication: extract the full contact name as entity and the type (email/sms/note, default email).
 For brief_request: treat "look up", "find", "what's X's address", and similar lookup phrases as brief_request.
 For draft_outreach: extract the contact name as entity, or "all" if the user says "all", "everyone", "draft all".
-For cma_request: extract the full property street address as entity. Do not classify contact address lookups as cma_request.
+For cma_request:
+- Address-only: Ben gives a street address as the subject with no named contact to file or send to. Put the full property street address in entity. Leave entity_address null. send_intent false.
+- Contact-only: Ben names a contact or contact ID and does not give a separate street address. Put that contact in entity. Leave entity_address null. send_intent true (delivery-eligible).
+- Contact plus separate address: Ben names a contact AND a property address that is not just that contact's recorded home. Put the contact name or ID in entity, the full property street address in entity_address, and set send_intent from the verb: true for delivery language (send, email, get this to), false for look-only language (pull, get me, check, show me).
+- Incidental contact: if a name is only a landmark or aside (e.g. "near Scott's place") and the CMA subject is the street address, treat as address-only (entity is the address, entity_address null, send_intent false). Do not put the incidental name in entity.
+- Do not classify a plain address lookup (no CMA request) as cma_request.
 
 Respond ONLY with valid JSON in this exact format:
-{{"intent": "intent_name", "entity": "extracted entity or null", "type": "email or sms or note or null", "confidence": 0.0}}
+{{"intent": "intent_name", "entity": "extracted entity or null", "entity_address": "property address or null", "send_intent": false, "type": "email or sms or note or null", "confidence": 0.0}}
 
 No other text. No markdown. Just the JSON object."""
 
@@ -179,7 +202,7 @@ def classify_intent(message: InboundMessage, buffer: ConversationBuffer) -> Rout
             },
             json={
                 "model": HAIKU_MODEL,
-                "max_tokens": 100,
+                "max_tokens": 200,
                 "messages": [
                     {"role": "system", "content": _SYSTEM_PROMPT},
                     {"role": "user", "content": user_prompt},
@@ -203,6 +226,8 @@ def classify_intent(message: InboundMessage, buffer: ConversationBuffer) -> Rout
             original_message=message,
             intent_type=intent_type,
             entity=parsed.get("entity"),
+            entity_address=parsed.get("entity_address"),
+            send_intent=_coerce_optional_bool(parsed.get("send_intent")),
             comm_type=parsed.get("type"),
             confidence=float(parsed.get("confidence", 0.0)),
         )
@@ -216,6 +241,8 @@ def classify_intent(message: InboundMessage, buffer: ConversationBuffer) -> Rout
             original_message=message,
             intent_type="unknown",
             entity=None,
+            entity_address=None,
+            send_intent=None,
             comm_type=None,
             confidence=0.0,
         )

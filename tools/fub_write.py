@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 from tools.logger import log_event
 from services.fub_client import fub_post, fub_put
 
@@ -42,6 +44,44 @@ def add_note_to_contact(contact_id: str, note_text: str) -> dict:
         raise
 
 
+def update_custom_field(contact_id: str, field_name: str, value: str) -> dict:
+    """PUT a single custom field value onto a FUB contact."""
+    log_event(
+        "fub",
+        "update_custom_field",
+        "start",
+        contact_id=contact_id,
+        detail=field_name,
+        file=__file__,
+        function="update_custom_field",
+    )
+    payload = {field_name: value}
+    try:
+        result = fub_put(f"/people/{contact_id}", json=payload)
+        log_event(
+            "fub",
+            "update_custom_field",
+            "success",
+            contact_id=contact_id,
+            detail=field_name,
+            file=__file__,
+            function="update_custom_field",
+        )
+        return result
+    except Exception as exc:
+        log_event(
+            "fub",
+            "update_custom_field",
+            "failure",
+            detail=str(exc),
+            contact_id=contact_id,
+            exc_info=exc,
+            file=__file__,
+            function="update_custom_field",
+        )
+        raise
+
+
 def enroll_in_action_plan(contact_id: str, plan_id: int) -> dict:
     """Enroll a FUB contact in an action plan."""
     log_event(
@@ -55,10 +95,17 @@ def enroll_in_action_plan(contact_id: str, plan_id: int) -> dict:
     payload = {"personId": int(contact_id), "actionPlanId": int(plan_id)}
     try:
         result = fub_post("/actionPlansPeople", json=payload)
+        try:
+            body_detail = json.dumps(result, default=str)
+        except (TypeError, ValueError):
+            body_detail = str(result)
+        if len(body_detail) > 300:
+            body_detail = body_detail[:300]
         log_event(
             "fub",
             "enroll_action_plan",
             "success",
+            detail=body_detail,
             contact_id=contact_id,
             file=__file__,
             function="enroll_in_action_plan",
@@ -113,6 +160,40 @@ def add_tags_to_contact(contact_id: str, tags: list[str]) -> dict:
             exc_info=exc,
             file=__file__,
             function="add_tags_to_contact",
+        )
+        raise
+
+
+def create_contact(payload: dict) -> dict:
+    """POST a new FUB person record. Caller supplies assignedUserId and fields."""
+    log_event(
+        "fub",
+        "create_contact",
+        "start",
+        file=__file__,
+        function="create_contact",
+    )
+    try:
+        result = fub_post("/people", json=payload)
+        contact_id = str((result or {}).get("id") or "")
+        log_event(
+            "fub",
+            "create_contact",
+            "success",
+            contact_id=contact_id,
+            file=__file__,
+            function="create_contact",
+        )
+        return result
+    except Exception as exc:
+        log_event(
+            "fub",
+            "create_contact",
+            "failure",
+            detail=str(exc),
+            exc_info=exc,
+            file=__file__,
+            function="create_contact",
         )
         raise
 

@@ -10,3 +10,8 @@ __pycache__/
 *.log
 AGENT_SNAPSHOT.md
 venv/
+
+# relaunch module: never commit source dumps or secrets
+relaunch/_source/
+relaunch/**/.env
+relaunch/.env

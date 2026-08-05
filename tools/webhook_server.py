@@ -19,7 +19,7 @@ import requests
 import uvicorn
 from dotenv import load_dotenv
 from fastapi import FastAPI, Header, HTTPException, Request
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 
 ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
@@ -41,7 +41,11 @@ from services.webhook_db import enqueue_event
 from tools.analytics import capture
 from tools.cma_registry import get_job, get_job_by_token, mark_failed, mark_ready, record_open
 from tools.fub import get_contact_by_id, get_recent_activity
-from tools.fub_write import add_note_to_contact, add_tags_to_contact
+from tools.fub_write import (
+    add_note_to_contact,
+    add_tags_to_contact,
+    update_custom_field,
+)
 from tools.logger import log_event
 from tools.telegram import (
     BOT_TOKEN,
@@ -1157,6 +1161,140 @@ def health() -> dict[str, str]:
     return {"status": "ok", "service": "webhook"}
 
 
+_RELAUNCH_BATCHES_ROOT = ROOT / "relaunch" / "batches"
+_BATCH_ID_PATTERN = re.compile(r"^\d{4}-\d{2}$")
+_OPAQUE_TOKEN_PATTERN = re.compile(r"^[A-Za-z0-9_-]{8,128}$")
+
+
+def _safe_batch_dir(batch_id: str) -> Path:
+    if not _BATCH_ID_PATTERN.match(batch_id or ""):
+        raise HTTPException(status_code=400, detail="Invalid batch id")
+    batch_dir = (_RELAUNCH_BATCHES_ROOT / batch_id).resolve()
+    batches_root = _RELAUNCH_BATCHES_ROOT.resolve()
+    if not str(batch_dir).startswith(str(batches_root) + os.sep):
+        raise HTTPException(status_code=400, detail="Invalid batch path")
+    if not batch_dir.is_dir():
+        raise HTTPException(status_code=404, detail="Batch not found")
+    return batch_dir
+
+
+def _safe_batch_output_dir(batch_id: str) -> Path:
+    output_dir = (_safe_batch_dir(batch_id) / "output").resolve()
+    if not output_dir.is_dir():
+        raise HTTPException(status_code=404, detail="Batch output not found")
+    return output_dir
+
+
+def _load_review_map(batch_id: str) -> dict[str, str]:
+    path = _safe_batch_dir(batch_id) / "review_map.json"
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="Review map not found")
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise HTTPException(status_code=500, detail=f"Review map unreadable: {exc}")
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=500, detail="Review map invalid")
+    return {str(k): str(v) for k, v in payload.items()}
+
+
+def _require_relaunch_review_auth(authorization: str | None) -> None:
+    """Basic auth for the directory-index view only."""
+    user = os.environ.get("RELAUNCH_REVIEW_BASIC_USER", "").strip()
+    password = os.environ.get("RELAUNCH_REVIEW_BASIC_PASSWORD", "").strip()
+    if not user or not password:
+        raise HTTPException(
+            status_code=503,
+            detail="Review auth not configured",
+        )
+    if not authorization or not authorization.lower().startswith("basic "):
+        raise HTTPException(
+            status_code=401,
+            detail="Authentication required",
+            headers={"WWW-Authenticate": 'Basic realm="relaunch-review"'},
+        )
+    try:
+        decoded = base64.b64decode(authorization.split(" ", 1)[1].strip()).decode(
+            "utf-8"
+        )
+        provided_user, provided_password = decoded.split(":", 1)
+    except Exception:
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid authorization header",
+            headers={"WWW-Authenticate": 'Basic realm="relaunch-review"'},
+        )
+    if not (
+        hmac.compare_digest(provided_user, user)
+        and hmac.compare_digest(provided_password, password)
+    ):
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid credentials",
+            headers={"WWW-Authenticate": 'Basic realm="relaunch-review"'},
+        )
+
+
+@app.get("/relaunch/batches/{batch_id}/")
+def relaunch_batch_index(
+    batch_id: str,
+    authorization: str | None = Header(default=None),
+) -> HTMLResponse:
+    """Auth-gated HTML index of opaque PDF links for operator review."""
+    _require_relaunch_review_auth(authorization)
+    output_dir = _safe_batch_output_dir(batch_id)
+    review_map = _load_review_map(batch_id)
+    # Only list tokens whose files still exist.
+    items_parts: list[str] = []
+    for token, filename in sorted(review_map.items(), key=lambda kv: kv[1]):
+        path = output_dir / filename
+        if not path.is_file():
+            continue
+        items_parts.append(
+            f'<li><a href="/relaunch/batches/{batch_id}/f/{token}.pdf">'
+            f"{filename}</a></li>"
+        )
+    html = (
+        "<!DOCTYPE html><html><head><meta charset='utf-8'>"
+        f"<title>Relaunch batch {batch_id}</title></head><body>"
+        f"<h1>Relaunch batch {batch_id}</h1>"
+        f"<p>{len(items_parts)} PDF packet(s)</p>"
+        f"<ul>{''.join(items_parts)}</ul>"
+        "</body></html>"
+    )
+    return HTMLResponse(content=html)
+
+
+@app.get("/relaunch/batches/{batch_id}/f/{token}.pdf")
+def relaunch_batch_opaque_file(batch_id: str, token: str) -> FileResponse:
+    """
+    Serve one PDF by opaque token. Unauthenticated so Lob can fetch.
+    Tokens are unguessable; predictable {city}_{street}.pdf paths are gone.
+    """
+    if not _OPAQUE_TOKEN_PATTERN.match(token or ""):
+        raise HTTPException(status_code=400, detail="Invalid token")
+    review_map = _load_review_map(batch_id)
+    filename = review_map.get(token)
+    if not filename:
+        raise HTTPException(status_code=404, detail="File not found")
+    if "/" in filename or "\\" in filename or filename.startswith("."):
+        raise HTTPException(status_code=400, detail="Invalid mapped filename")
+    if not filename.lower().endswith(".pdf"):
+        raise HTTPException(status_code=400, detail="Only PDF files are served")
+    output_dir = _safe_batch_output_dir(batch_id)
+    path = (output_dir / filename).resolve()
+    if not str(path).startswith(str(output_dir) + os.sep):
+        raise HTTPException(status_code=400, detail="Invalid file path")
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="File not found")
+    return FileResponse(
+        path,
+        media_type="application/pdf",
+        filename=filename,
+        headers={"Cache-Control": "private, no-store"},
+    )
+
+
 _CMA_GATEWAY_TIMEOUT_SECONDS = 30
 _CMA_PDF_FETCH_TIMEOUT_SECONDS = 60
 _PDF_MAGIC = b"%PDF-"
@@ -1263,18 +1401,45 @@ def _format_cma_callback_payload_for_log(payload: dict[str, Any]) -> str:
     return json.dumps(safe, default=str)
 
 
+def _recipient_first_name(contact_id: str) -> str:
+    """Resolve first name for the ready-card send button label."""
+    try:
+        contact = get_contact_by_id(contact_id)
+        first = str(contact.get("firstName") or "").strip()
+        if first:
+            return first
+    except Exception:
+        pass
+    return "contact"
+
+
 def _send_cma_ready_card(
     address: str,
     tracking_url: str,
     edit_url: str | None,
     chat_id: str,
     job_id: str,
+    send_target_contact_id: str | None = None,
 ) -> bool:
-    """Send a CMA ready card with View (and optional Edit) URL buttons."""
-    buttons = [{"text": "View", "url": tracking_url}]
+    """Send a CMA ready card with View (and optional Edit) URL buttons.
+
+    Jobs with a send target also get a Send to {{first_name}} callback button
+    on its own row. Telegram allows mixing url and callback_data buttons; the
+    send action is isolated on a second row for clarity.
+    """
+    url_row = [{"text": "View", "url": tracking_url}]
     if edit_url:
-        buttons.append({"text": "Edit", "url": edit_url})
-    reply_markup = {"inline_keyboard": [buttons]}
+        url_row.append({"text": "Edit", "url": edit_url})
+    keyboard = [url_row]
+    if send_target_contact_id:
+        first_name = _recipient_first_name(send_target_contact_id)
+        keyboard.append(
+            [{
+                "text": f"Send to {first_name}",
+                "callback_data": f"send_cma:{job_id}",
+            }]
+        )
+    reply_markup = {"inline_keyboard": keyboard}
     text = f"CMA ready for {address}\n\n{tracking_url}"
     sent = send_inline_message(text, reply_markup=reply_markup, chat_id=chat_id)
     if sent:
@@ -1283,19 +1448,22 @@ def _send_cma_ready_card(
             "ready_card",
             "success",
             detail=f"job_id={job_id}",
+            contact_id=send_target_contact_id or "",
             file=__file__,
             function="_send_cma_ready_card",
         )
     else:
+        err = sent.error or "unknown telegram error"
         log_event(
             "cma",
             "ready_card",
             "failure",
-            detail=f"job_id={job_id}",
+            detail=f"job_id={job_id} telegram={err}",
+            contact_id=send_target_contact_id or "",
             file=__file__,
             function="_send_cma_ready_card",
         )
-    return sent
+    return bool(sent)
 
 
 def _resolve_cma_reply_chat_id(job, job_id: str) -> str:
@@ -1422,6 +1590,47 @@ async def cma_callback(request: Request) -> JSONResponse:
         if updated is None:
             return JSONResponse(status_code=404, content={"status": "not_found"})
 
+        if updated.contact_id:
+            try:
+                log_event(
+                    "cma",
+                    "custom_field_write",
+                    "start",
+                    detail=f"job_id={job_id} field=customCMAReportLink",
+                    contact_id=updated.contact_id,
+                    file=__file__,
+                    function="cma_callback",
+                )
+                update_custom_field(
+                    updated.contact_id,
+                    "customCMAReportLink",
+                    tracking_url,
+                )
+                log_event(
+                    "cma",
+                    "custom_field_write",
+                    "success",
+                    detail=f"job_id={job_id} field=customCMAReportLink",
+                    contact_id=updated.contact_id,
+                    file=__file__,
+                    function="cma_callback",
+                )
+            except Exception as field_exc:
+                log_event(
+                    "cma",
+                    "custom_field_write",
+                    "failure",
+                    detail=f"job_id={job_id} {field_exc}",
+                    contact_id=updated.contact_id,
+                    exc_info=field_exc,
+                    file=__file__,
+                    function="cma_callback",
+                )
+                send_operator_alert(
+                    f"CMA custom field write failed job_id={job_id} "
+                    f"contact_id={updated.contact_id}: {field_exc}"
+                )
+
         _append_activity_feed({
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "event_type": "cma_ready",
@@ -1441,7 +1650,12 @@ async def cma_callback(request: Request) -> JSONResponse:
         )
         reply_chat_id = _resolve_cma_reply_chat_id(updated, job_id)
         _send_cma_ready_card(
-            updated.address, tracking_url, edit_url, reply_chat_id, job_id
+            updated.address,
+            tracking_url,
+            edit_url,
+            reply_chat_id,
+            job_id,
+            send_target_contact_id=updated.send_target_contact_id,
         )
         return JSONResponse(status_code=200, content={"status": "ok"})
     except Exception as exc:

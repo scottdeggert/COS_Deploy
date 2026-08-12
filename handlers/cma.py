@@ -235,6 +235,26 @@ def handle(intent: RoutedIntent) -> HandlerResult:
     )
 
     if not entity:
+        # Defensive: Haiku sometimes puts a bare address in entity_address.
+        # With no contact in entity, treat that as address-only Phase 1.
+        if entity_address and _looks_like_address(entity_address):
+            log_event(
+                "cma",
+                "handle",
+                "fallback",
+                detail=(
+                    "empty entity; using entity_address as address-only "
+                    f"len={len(entity_address)}"
+                ),
+                file=__file__,
+                function="handle",
+            )
+            return _start_cma_job(
+                address=entity_address,
+                reply_chat_id=intent.original_message.chat_id,
+                contact_id=None,
+                send_target_contact_id=None,
+            )
         return HandlerResult(success=False, telegram_output=MISSING_ADDRESS_MESSAGE)
 
     # Pattern 3: named contact + separate property address from the utterance.

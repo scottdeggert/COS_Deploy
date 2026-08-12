@@ -113,6 +113,32 @@ these — six weeks is enough time for priorities to have shifted.
 
 ## INCIDENT HISTORY
 
+### 2026-08-12 — Bare-address CMA requests misfiled into entity_address
+
+Live demo: five consecutive Telegram CMA attempts with valid street
+addresses (e.g. "722 Augusta Drive, Moraga, CA", "Create a cma for 49
+corliss drive...") all returned "I need a street address". Logs showed
+`entity_len=0 entity_address_len=N` — Haiku put the address in
+`entity_address` and left `entity` empty. `handlers/cma.py` address-only
+path only reads `entity`, so it failed even though the address was
+extracted.
+
+**Root cause:** Pattern-3 router prompt already stated address-only goes
+in `entity`, but the JSON schema label was
+`"entity_address": "property address or null"`. That label outweighed the
+prose rules; Haiku treated any property address as belonging in
+`entity_address`. Same prompt had worked on Aug 1 for some phrasings
+(non-deterministic), then failed consistently on Aug 12.
+
+**Fix:** (1) Tighten `core/router.py` cma_request rules with an explicit
+hard rule, concrete examples for address-only / contact-only / pattern 3,
+and JSON schema labels that say `entity_address` is only for a separate
+address when `entity` is already a contact. (2) Defensive fallback in
+`handlers/cma.py`: if `entity` is empty but `entity_address` looks like a
+street address, treat it as Phase 1 address-only rather than returning
+MISSING_ADDRESS. Pattern-3 dual-entity path unchanged (requires non-empty
+`entity`).
+
 ### 2026-07-03 — ProxyError during watchdog restart bursts
 
 If FUB or OpenRouter calls fail with "ProxyError... Tunnel connection

@@ -82,7 +82,7 @@ status_check - user wants recent log output
 greeting - hello, hi, checking in
 identity_query - asking who or what the agent is as an entity, not what it can do; examples: "who are you", "what is this thing", "what are you called"
 help_request - asking what it can do or how to do something; examples: "what can you do", "how do I draft an email", "can you text someone for me", "I don't know what this does", "how do I use you"
-cma_request - user wants a CMA, comparative market analysis, comps, or home value report; entity is a property street address, or a contact name or contact ID when Ben asks for a CMA for someone
+cma_request - user wants a CMA, comparative market analysis, comps, or home value report; put the primary subject in entity (street address when no contact is named; contact name or ID when a contact is named)
 unknown - anything else
 """
 
@@ -94,15 +94,20 @@ Extract any entity (contact name, contact ID, address, or "all") if present.
 For draft_communication: extract the full contact name as entity and the type (email/sms/note, default email).
 For brief_request: treat "look up", "find", "what's X's address", and similar lookup phrases as brief_request.
 For draft_outreach: extract the contact name as entity, or "all" if the user says "all", "everyone", "draft all".
-For cma_request:
-- Address-only: Ben gives a street address as the subject with no named contact to file or send to. Put the full property street address in entity. Leave entity_address null. send_intent false.
-- Contact-only: Ben names a contact or contact ID and does not give a separate street address. Put that contact in entity. Leave entity_address null. send_intent true (delivery-eligible).
-- Contact plus separate address: Ben names a contact AND a property address that is not just that contact's recorded home. Put the contact name or ID in entity, the full property street address in entity_address, and set send_intent from the verb: true for delivery language (send, email, get this to), false for look-only language (pull, get me, check, show me).
+For cma_request (hard field rules; follow exactly):
+- entity_address is ONLY for a separate property address when entity is already a contact name or contact ID. If there is no contact name or ID, entity_address MUST be null.
+- Address-only (no contact name): put the full street address in entity; entity_address null; send_intent false.
+  Examples: "722 Augusta Drive, Moraga, CA" -> entity="722 Augusta Drive, Moraga, CA", entity_address=null, send_intent=false
+  "Create a CMA for 49 Corliss Dr, Moraga, CA" -> entity="49 Corliss Dr, Moraga, CA", entity_address=null, send_intent=false
+- Contact-only (contact name or ID, no separate address): put that contact in entity; entity_address null; send_intent true.
+  Example: "Get me a CMA for Jenny Smith's home" -> entity="Jenny Smith", entity_address=null, send_intent=true
+- Contact plus separate address: put the contact name or ID in entity; put the full property street address in entity_address; set send_intent from the verb (true for send/email/get this to; false for pull/get me/check/show me).
+  Example: "Send Scott Eggert a CMA for 768 Augusta Dr, Moraga, CA" -> entity="Scott Eggert", entity_address="768 Augusta Dr, Moraga, CA", send_intent=true
 - Incidental contact: if a name is only a landmark or aside (e.g. "near Scott's place") and the CMA subject is the street address, treat as address-only (entity is the address, entity_address null, send_intent false). Do not put the incidental name in entity.
 - Do not classify a plain address lookup (no CMA request) as cma_request.
 
 Respond ONLY with valid JSON in this exact format:
-{{"intent": "intent_name", "entity": "extracted entity or null", "entity_address": "property address or null", "send_intent": false, "type": "email or sms or note or null", "confidence": 0.0}}
+{{"intent": "intent_name", "entity": "contact name/ID OR street address when no contact; null if none", "entity_address": "separate property address ONLY when entity is a contact; otherwise null", "send_intent": false, "type": "email or sms or note or null", "confidence": 0.0}}
 
 No other text. No markdown. Just the JSON object."""
 

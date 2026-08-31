@@ -91,7 +91,7 @@ def handle_identity(intent: RoutedIntent) -> HandlerResult:
     soul = _load_soul_config()
     name = soul.get("name", "Trevor")
     personality = str(soul.get("personality_summary", "")).strip()
-    reply = f"I'm Ben's {name}. {personality}"
+    reply = f"I'm {name}. {personality}"
     return HandlerResult(success=True, telegram_output=reply)
 
 

@@ -247,6 +247,7 @@ def _handle_relaunch_send(callback: InboundCallback) -> str | None:
 
 def _route_message(message: InboundMessage) -> str | None:
     """Classify intent and dispatch to handler. Return reply string or None."""
+    _buffer.add("user", message.raw_text)
     intent = classify_intent(message, _buffer)
 
     if intent.intent_type == "greeting":
@@ -305,6 +306,13 @@ def _route_message(message: InboundMessage) -> str | None:
             return "Manual digest trigger failed. Check operator alerts."
 
     return generative.handle_fallback(intent).telegram_output
+
+
+def _on_message(message: InboundMessage) -> str | None:
+    reply = _route_message(message)
+    if reply is not None:
+        _buffer.add("assistant", reply)
+    return reply
 
 
 def _route_callback(callback: InboundCallback) -> str | None:
@@ -425,7 +433,7 @@ def main() -> None:
             send_operator_alert(f"CoS Agent startup failed -- FUB check: {exc}")
             raise SystemExit(f"FUB connectivity check failed: {exc}")
 
-    send_operator_alert("CoS Agent is online.")
+    send_operator_alert("Trevor is online.")
     log_event("cos_agent", "startup", "success", file=__file__, function="main")
 
     _start_watchdog()
@@ -444,9 +452,9 @@ def main() -> None:
 
     # Start polling loop (blocks)
     try:
-        poll(on_message=_route_message, on_callback=_route_callback)
+        poll(on_message=_on_message, on_callback=_route_callback)
     except KeyboardInterrupt:
-        send_operator_alert("CoS Agent going offline.")
+        send_operator_alert("Trevor going offline.")
         log_event("cos_agent", "shutdown", "success", file=__file__, function="main")
 
 

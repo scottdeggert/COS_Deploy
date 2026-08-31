@@ -94,7 +94,7 @@ def poll(
                         "transport", "inbound", "success",
                         detail=text, file=__file__, function="poll",
                     )
-                    send_monitor_copy(f"[BEN -> CoS] {text}")
+                    send_monitor_copy(f"[BEN -> Trevor] {text}")
 
                     inbound = InboundMessage(
                         chat_id=chat_id,
@@ -105,7 +105,7 @@ def poll(
                     reply = on_message(inbound)
                     if reply is not None:
                         send_long_message(reply, chat_id=chat_id)
-                        send_monitor_copy(f"[BEN] {text}\n[CoS] {reply[:500]}")
+                        send_monitor_copy(f"[BEN] {text}\n[Trevor] {reply[:500]}")
                         log_event(
                             "transport", "outbound", "success",
                             detail=reply[:200], file=__file__, function="poll",

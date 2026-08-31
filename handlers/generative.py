@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 import yaml
 
 from app.config import CLIENTS_DIR, CLIENT_ID
@@ -56,13 +58,30 @@ def _load_soul_config() -> dict:
     return data if isinstance(data, dict) else {}
 
 
+def _recent_history(current_message: str, n: int = 5) -> list[dict]:
+    """Live conversation turns from the process buffer.
+
+    Imported at call time so this module can load without importing
+    core.main (core.main already imports this handler).
+
+    The current user turn is already in the buffer by the time a
+    handler runs, so fetch one extra turn and drop it when it matches.
+    """
+    from core.main import _buffer
+    turns = _buffer.recent(n + 1)
+    if turns and turns[-1].get("content") == current_message:
+        turns = turns[:-1]
+    return turns
+
+
 def handle_greeting(intent: RoutedIntent) -> HandlerResult:
     """Handle greeting intents."""
     message = intent.original_message.raw_text
     reply = chat_reply(
         f"Ben just greeted you with: '{message}'. "
         "Respond warmly and briefly. Open the door for what he needs. "
-        "1-2 sentences. Vary your phrasing naturally."
+        "1-2 sentences. Vary your phrasing naturally.",
+        history=_recent_history(intent.original_message.raw_text),
     )
     return HandlerResult(success=True, telegram_output=reply)
 
@@ -70,7 +89,7 @@ def handle_greeting(intent: RoutedIntent) -> HandlerResult:
 def handle_identity(intent: RoutedIntent) -> HandlerResult:
     """Handle identity_query intents."""
     soul = _load_soul_config()
-    name = soul.get("name", "Chief of Staff")
+    name = soul.get("name", "Trevor")
     personality = str(soul.get("personality_summary", "")).strip()
     reply = f"I'm Ben's {name}. {personality}"
     return HandlerResult(success=True, telegram_output=reply)
@@ -88,7 +107,8 @@ def handle_help(intent: RoutedIntent) -> HandlerResult:
             f"Ben asked what you can do or how to use you: '{message}'. "
             f"You do not have your capabilities reference loaded. "
             f"Respond with this meaning in your own words, warmly and briefly: "
-            f"'{_CAPABILITIES_MISSING_REPLY}'"
+            f"'{_CAPABILITIES_MISSING_REPLY}'",
+            history=_recent_history(intent.original_message.raw_text),
         )
         return HandlerResult(success=True, telegram_output=reply)
 
@@ -97,7 +117,8 @@ def handle_help(intent: RoutedIntent) -> HandlerResult:
         "Answer using ONLY the capabilities reference below. "
         "Do not invent features not listed there. "
         "Plain language, Ben's point of view, concise.\n\n"
-        f"Capabilities reference:\n{capabilities}"
+        f"Capabilities reference:\n{capabilities}",
+        history=_recent_history(intent.original_message.raw_text),
     )
     return HandlerResult(success=True, telegram_output=reply)
 
@@ -105,12 +126,26 @@ def handle_help(intent: RoutedIntent) -> HandlerResult:
 def handle_fallback(intent: RoutedIntent) -> HandlerResult:
     """Handle unknown or unclassified intents."""
     message = intent.original_message.raw_text
+    if re.search(r"https?://", message):
+        return HandlerResult(
+            success=True,
+            telegram_output=(
+                "I can't pull content from a link yet, that's coming. "
+                "For now paste the text in and I'll work with it."
+            ),
+        )
     reply = chat_reply(
         f"Ben sent this message and you could not classify it: "
         f"'{message}'. "
+        "Check the conversation history above first. "
+        "If it clearly refers to something just discussed "
+        "(a link, a name, a request), respond to that directly "
+        "instead of asking what he means. "
+        "Only ask a clarifying question if nothing in the recent "
+        "history explains it. "
         "Do not announce that you did not understand. "
-        "Ask a clarifying question or reflect back what you think he might mean. "
-        "Stay warm and in the conversation. 1-2 sentences."
+        "Stay warm and in the conversation. 1-2 sentences.",
+        history=_recent_history(intent.original_message.raw_text),
     )
     return HandlerResult(success=True, telegram_output=reply)
 

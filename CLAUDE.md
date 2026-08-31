@@ -232,7 +232,8 @@ COS_Deploy/
 │   ├── lead_alert.py           # FUB webhook lead alert + APPROVE/CALL callbacks
 │   └── status.py               # /status command
 ├── services/
-│   └── fub_client.py           # requests.Session + urllib3 retry (3 retries, 2x backoff)
+│   ├── fub_client.py           # requests.Session + urllib3 retry (3 retries, 2x backoff)
+│   └── google_calendar.py      # Google Calendar OAuth + read-only event fetch
 ├── tools/                      # Framework-agnostic pure Python
 │   ├── activity_feed.py        # Webhook-captured inbound activity, feeds the digest
 │   ├── appointments.py
@@ -241,12 +242,14 @@ COS_Deploy/
 │   ├── fub.py
 │   ├── fub_activity.py
 │   ├── fub_write.py
+│   ├── google_calendar.py      # Morning digest schedule helpers
 │   ├── health.py
 │   ├── hot_leads.py
 │   ├── logger.py
 │   ├── telegram.py
 │   ├── voice.py                # Single source of truth for Ben's voice
 │   ├── watchdog.py             # Deadman's switch + error classification (subprocess of core/main)
+│   ├── web_fetch.py            # Allowlisted HTTP fetch (not wired to router/handlers)
 │   └── webhook_server.py       # FUB webhook receiver (supervisor: webhook-server)
 ├── agents/
 │   └── crewai/
@@ -260,6 +263,7 @@ COS_Deploy/
 │       ├── fub-config.yaml
 │       ├── scheduler_config.json
 │       ├── communication_prefs.json
+│       ├── google_calendar_config.json
 │       ├── knowledge/
 │       └── sequences/          # Sequence copy (runtime reads templates via FUB, not these files directly)
 ├── relaunch/                   # Direct mail pipeline (expired listings). Own CLAUDE.md, own .env.
@@ -274,6 +278,8 @@ COS_Deploy/
 │   ├── logs/                   # Pipeline + run logs
 │   ├── tests/                  # Regression tests (entity detection, salutation)
 │   └── trigger.py              # Cron entrypoint
+├── tests/
+│   └── test_web_fetch.py       # Standalone unit tests for tools/web_fetch.py
 ├── scripts/
 │   ├── audit_action_plan_templates.py
 │   └── discover_activity.py
@@ -510,7 +516,6 @@ Unless explicitly scoped in a prompt, do not build or mention:
 - PostHog integration
 - CloudCMA integration
 - Calendly integration (native FUB sync status unconfirmed)
-- Google Calendar integration (blocked: Side RE OAuth policy)
 - Bluedot transcript processing
 - EA email identity (Alex / Resend)
 - Rental sequence content
@@ -581,6 +586,8 @@ log. This is exactly how the "not built yet" list went stale once already.
 | Lead alert handler | handlers/lead_alert.py |
 | Status handler | handlers/status.py |
 | FUB HTTP client | services/fub_client.py |
+| Google Calendar (read-only) | services/google_calendar.py |
+| Morning digest calendar helpers | tools/google_calendar.py |
 | FUB reads | tools/fub.py |
 | FUB activity/context | tools/fub_activity.py |
 | FUB writes | tools/fub_write.py |
@@ -590,6 +597,7 @@ log. This is exactly how the "not built yet" list went stale once already.
 | Appointments | tools/appointments.py |
 | Voice context | tools/voice.py |
 | Logging | tools/logger.py |
+| Allowlisted HTTP fetch | tools/web_fetch.py |
 | Health reporter | tools/health.py |
 | Telegram send | tools/telegram.py |
 | MCP API server | mcp_server.py |

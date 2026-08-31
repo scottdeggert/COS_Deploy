@@ -247,6 +247,7 @@ COS_Deploy/
 │   ├── telegram.py
 │   ├── voice.py                # Single source of truth for Ben's voice
 │   ├── watchdog.py             # Deadman's switch + error classification (subprocess of core/main)
+│   ├── web_fetch.py            # Allowlisted HTTP fetch (not wired to router/handlers)
 │   └── webhook_server.py       # FUB webhook receiver (supervisor: webhook-server)
 ├── agents/
 │   └── crewai/
@@ -274,6 +275,8 @@ COS_Deploy/
 │   ├── logs/                   # Pipeline + run logs
 │   ├── tests/                  # Regression tests (entity detection, salutation)
 │   └── trigger.py              # Cron entrypoint
+├── tests/
+│   └── test_web_fetch.py       # Standalone unit tests for tools/web_fetch.py
 ├── scripts/
 │   ├── audit_action_plan_templates.py
 │   └── discover_activity.py
@@ -510,7 +513,6 @@ Unless explicitly scoped in a prompt, do not build or mention:
 - PostHog integration
 - CloudCMA integration
 - Calendly integration (native FUB sync status unconfirmed)
-- Google Calendar integration (blocked: Side RE OAuth policy)
 - Bluedot transcript processing
 - EA email identity (Alex / Resend)
 - Rental sequence content
@@ -590,6 +592,7 @@ log. This is exactly how the "not built yet" list went stale once already.
 | Appointments | tools/appointments.py |
 | Voice context | tools/voice.py |
 | Logging | tools/logger.py |
+| Allowlisted HTTP fetch | tools/web_fetch.py |
 | Health reporter | tools/health.py |
 | Telegram send | tools/telegram.py |
 | MCP API server | mcp_server.py |

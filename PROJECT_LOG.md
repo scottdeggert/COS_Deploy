@@ -215,6 +215,56 @@ the permanent rule this produced.
 
 ## SHIPPED
 
+### 2026-08-28 — fallback URL stopgap (honest reply, no fetch)
+
+`handle_fallback` now short-circuits if `raw_text` matches `https?://`.
+It returns a fixed reply that URL fetching is not wired yet and asks
+Ben to paste the text. Local regex only, inside that function. Does not
+touch `chat_reply`, conversation history, or `tools/web_fetch.py`.
+Replace this when the real fetch path is wired; do not treat this regex
+as that integration.
+
+### 2026-08-28 — chat_reply now receives conversation history
+
+`handle_greeting`, `handle_help`, and `handle_fallback` in
+`handlers/generative.py` were calling `chat_reply` as a one-shot (system
+prompt + current instruction only). The classifier already had
+`_buffer.recent(...)` context; the reply path did not, so follow-up
+messages after an unknown/greeting/help turn had no prior turns.
+
+`chat_reply` now takes an optional `history: list[dict]`. When present,
+those turns are inserted between the system prompt and the current
+instruction, mapped `user` -> `"user"`, `assistant` -> `"assistant"`.
+The three conversational handlers pass `_buffer.recent(5)` via a
+call-time import of `core.main._buffer` (module-level import would
+circular-import). `classify_intent` / `core/router.py` unchanged.
+`handlers/cma.py` still calls `chat_reply` without history; the new
+argument is optional. Not restarted, not deployed.
+
+### 2026-08-28 — tools/web_fetch.py built, not wired
+
+Added `fetch_url(url) -> str` in `tools/web_fetch.py`. Allowlist is host
+`brightworkrealty.com` or any subdomain of it (dot-boundary, so
+`evilbrightworkrealty.com` is rejected). Off-allowlist URLs return an
+error string and never hit the network. httpx, 10s timeout, 50_000
+character cap with a truncation note. Raw text for `.json`/`.txt`; HTML
+tags stripped for `.html` and `text/html`. Logs start/success/failure
+via `log_event` with url and byte count. Standalone tests in
+`tests/test_web_fetch.py`. Not imported by `core/router.py` or any
+handler. **Confirm allowlist and cap with Scott before merge; both may
+need to change.**
+
+### 2026-08-18 — Google Calendar read-only morning digest schedule
+
+Added `services/google_calendar.py` (OAuth token refresh, `calendarList.list`,
+`events.list`, Pacific `zoneinfo` day bounds), `tools/google_calendar.py`
+(digest fetch + formatting + zero-event logging), tenant exclusion config at
+`clients/ben-olsen/google_calendar_config.json`, and OAuth routes on the
+webhook server (`/oauth/google/authorize`, `/oauth/google/callback`).
+`core/scheduler.py` morning digest schedule section now merges FUB appointments
+(when present) with Google Calendar events; pre-appointment brief path unchanged.
+Synchronous pull at generation time only (no watch/subscription job).
+
 ### 2026-06-28 — Layered architecture refactor
 
 Decomposed the monolithic `bot.py` (which mixed transport, routing,

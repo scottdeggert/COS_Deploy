@@ -19,7 +19,7 @@ import requests
 import uvicorn
 from dotenv import load_dotenv
 from fastapi import FastAPI, Header, HTTPException, Request
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 
 ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
@@ -33,10 +33,12 @@ from app.config import (
     CMA_PDF_ARCHIVE_DIR,
     CMA_REDIRECT_BASE,
     FUB_X_SYSTEM_KEY,
+    GOOGLE_CALENDAR_CREDENTIALS_PATH,
     LEAD_ALERT_PROCESSING_STALE_SECONDS,
     TELEGRAM_CHAT_ID,
 )
 from services.fub_client import fub_get
+from services.google_calendar import build_authorization_url, exchange_authorization_code
 from services.webhook_db import enqueue_event
 from tools.analytics import capture
 from tools.cma_registry import get_job, get_job_by_token, mark_failed, mark_ready, record_open
@@ -1159,6 +1161,104 @@ def _process_fub_event(payload: dict) -> None:
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok", "service": "webhook"}
+
+
+def _google_oauth_redirect_uri() -> str:
+    base = (CMA_REDIRECT_BASE or "").rstrip("/")
+    if not base:
+        raise HTTPException(
+            status_code=503,
+            detail="CMA_REDIRECT_BASE is not configured for Google OAuth callback",
+        )
+    return f"{base}/oauth/google/callback"
+
+
+@app.get("/oauth/google/authorize")
+def google_oauth_authorize() -> RedirectResponse:
+    """Start Google Calendar OAuth consent (one-time or re-auth)."""
+    if GOOGLE_CALENDAR_CREDENTIALS_PATH is None:
+        raise HTTPException(
+            status_code=503,
+            detail="GOOGLE_CALENDAR_CREDENTIALS_PATH is not configured",
+        )
+    try:
+        auth_url = build_authorization_url(_google_oauth_redirect_uri())
+    except Exception as exc:
+        log_event(
+            "google_calendar",
+            "oauth_authorize",
+            "failure",
+            detail=str(exc),
+            exc_info=exc,
+            file=__file__,
+            function="google_oauth_authorize",
+        )
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    log_event(
+        "google_calendar",
+        "oauth_authorize",
+        "start",
+        detail=f"redirecting to Google consent, callback={_google_oauth_redirect_uri()}",
+        file=__file__,
+        function="google_oauth_authorize",
+    )
+    return RedirectResponse(url=auth_url, status_code=302)
+
+
+@app.get("/oauth/google/callback")
+def google_oauth_callback(
+    code: str | None = None,
+    error: str | None = None,
+) -> HTMLResponse:
+    """Exchange OAuth authorization code and persist refresh token."""
+    if error:
+        log_event(
+            "google_calendar",
+            "oauth_callback",
+            "failure",
+            detail=f"Google OAuth error: {error}",
+            file=__file__,
+            function="google_oauth_callback",
+        )
+        raise HTTPException(status_code=400, detail=f"Google OAuth error: {error}")
+
+    if not code:
+        raise HTTPException(status_code=400, detail="Missing authorization code")
+
+    if GOOGLE_CALENDAR_CREDENTIALS_PATH is None:
+        raise HTTPException(
+            status_code=503,
+            detail="GOOGLE_CALENDAR_CREDENTIALS_PATH is not configured",
+        )
+
+    redirect_uri = _google_oauth_redirect_uri()
+    try:
+        exchange_authorization_code(code, redirect_uri)
+    except Exception as exc:
+        log_event(
+            "google_calendar",
+            "oauth_callback",
+            "failure",
+            detail=str(exc),
+            exc_info=exc,
+            file=__file__,
+            function="google_oauth_callback",
+        )
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    log_event(
+        "google_calendar",
+        "oauth_callback",
+        "success",
+        detail=f"tokens saved to {GOOGLE_CALENDAR_CREDENTIALS_PATH}",
+        file=__file__,
+        function="google_oauth_callback",
+    )
+    return HTMLResponse(
+        "<html><body><p>Google Calendar authorization complete. "
+        "You can close this window.</p></body></html>"
+    )
 
 
 _RELAUNCH_BATCHES_ROOT = ROOT / "relaunch" / "batches"

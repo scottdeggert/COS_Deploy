@@ -1,6 +1,7 @@
 crewai
 anthropic
 requests
+httpx
 python-dotenv
 pyyaml
 python-telegram-bot

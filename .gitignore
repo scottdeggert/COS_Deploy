@@ -15,3 +15,6 @@ venv/
 relaunch/_source/
 relaunch/**/.env
 relaunch/.env
+
+# Tenant OAuth and other per-client secrets
+clients/*/secrets/

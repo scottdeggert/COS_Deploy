@@ -82,7 +82,7 @@ def draft_communication(
         return f"Draft failed: {exc}"
 
 
-def chat_reply(instruction: str) -> str:
+def chat_reply(instruction: str, history: list[dict] | None = None) -> str:
     """Generate a conversational reply to Ben using the agent soul context.
 
     Used for greeting, unknown, and other conversational intents.
@@ -90,6 +90,9 @@ def chat_reply(instruction: str) -> str:
 
     Args:
         instruction: describes what kind of reply to generate
+        history: optional prior turns. Inserted between the system prompt
+            and the current instruction. Role mapping matches the
+            classifier: user -> "user", assistant -> "assistant".
     """
     from pathlib import Path
 
@@ -102,6 +105,18 @@ def chat_reply(instruction: str) -> str:
             "Respond briefly and helpfully."
         )
 
+    messages: list[dict[str, str]] = [
+        {"role": "system", "content": soul_context},
+    ]
+    if history:
+        for turn in history:
+            role = "user" if turn.get("role") == "user" else "assistant"
+            messages.append({
+                "role": role,
+                "content": turn.get("content", ""),
+            })
+    messages.append({"role": "user", "content": instruction})
+
     try:
         resp = requests.post(
             OPENROUTER_URL,
@@ -112,10 +127,7 @@ def chat_reply(instruction: str) -> str:
             json={
                 "model": SONNET_MODEL,
                 "max_tokens": 100,
-                "messages": [
-                    {"role": "system", "content": soul_context},
-                    {"role": "user", "content": instruction},
-                ],
+                "messages": messages,
             },
             timeout=20,
         )

@@ -78,7 +78,6 @@ hot_leads - user asks about cooling hot leads in general
 hot_leads_list - user wants to see the cooling hot leads list; says "hot leads", "show me the list", or "yes" after being prompted
 draft_outreach - user wants outreach drafted for one or all cold hot leads; entity is the contact name or "all"
 draft_communication - user wants to draft an email, text, or note to someone; entity is the full contact name if provided; type is email/sms/note
-status_check - user wants recent log output
 greeting - hello, hi, checking in
 identity_query - asking who or what the agent is as an entity, not what it can do; examples: "who are you", "what is this thing", "what are you called"
 help_request - asking what it can do or how to do something; examples: "what can you do", "how do I draft an email", "can you text someone for me", "I don't know what this does", "how do I use you"

@@ -29,6 +29,11 @@ from tools.appointments import (
     get_upcoming_appointments,
 )
 from tools.activity_feed import format_morning_digest_recent_activity
+from tools.google_calendar import (
+    fetch_today_calendar_events,
+    format_calendar_event_line,
+    format_morning_digest_schedule_lines,
+)
 from tools.hot_leads import get_hot_leads_going_cold
 from tools.logger import log_event
 from tools.telegram import send_long_message, send_message, send_operator_alert
@@ -154,6 +159,37 @@ def _pick_morning_greeting(day_name: str) -> str:
     return random.choice(pool)
 
 
+def _appointment_start_pacific(appt: dict) -> datetime | None:
+    """Parse FUB appointment start using the same offset as format_appointment_summary."""
+    start_str = appt.get("start")
+    if not start_str:
+        return None
+    try:
+        start = datetime.fromisoformat(str(start_str).replace("Z", "+00:00"))
+        # Match tools/appointments.format_appointment_summary digest display logic.
+        pacific_offset = timedelta(hours=-7)  # PDT; adjust to -8 for PST
+        local = start + pacific_offset
+        return local.replace(tzinfo=_PACIFIC)
+    except ValueError:
+        return None
+
+
+def _fub_appointment_duplicates_google_event(
+    appt_start: datetime,
+    calendar_events: list,
+    *,
+    window_minutes: int = 15,
+) -> bool:
+    """True when a timed Google event starts within window_minutes of appt_start."""
+    window = timedelta(minutes=window_minutes)
+    for event in calendar_events:
+        if event.all_day:
+            continue
+        if abs(event.start - appt_start) <= window:
+            return True
+    return False
+
+
 def morning_digest(target_chat_id: str | None = None) -> str:
     now_pacific = datetime.now(tz=_PACIFIC)
     day_name = now_pacific.strftime("%A")
@@ -161,16 +197,41 @@ def morning_digest(target_chat_id: str | None = None) -> str:
     lines = [greeting, ""]
 
     appointments = get_upcoming_appointments(hours_ahead=18)
-    if appointments:
-        lines.append("Today's appointments:")
-        for appt in appointments:
-            summary = format_appointment_summary(appt)
-            contact_id = get_contact_id_from_appointment(appt)
-            if contact_id:
-                summary += f"\n  Send: brief {contact_id} for a full brief"
-            lines.append(f"* {summary}")
+    calendar_events = fetch_today_calendar_events(CLIENT_ID)
+
+    supplemental_fub_lines: list[str] = []
+    for appt in appointments:
+        appt_start = _appointment_start_pacific(appt)
+        if appt_start and _fub_appointment_duplicates_google_event(
+            appt_start, calendar_events
+        ):
+            appt_id = appt.get("id")
+            log_event(
+                "scheduler",
+                "morning_digest_schedule",
+                "success",
+                detail=(
+                    f"suppressed FUB appointment {appt_id} duplicate of "
+                    f"Google Calendar event within 15m at {appt_start.isoformat()}"
+                ),
+                file=__file__,
+                function="morning_digest",
+            )
+            continue
+
+        summary = format_appointment_summary(appt)
+        contact_id = get_contact_id_from_appointment(appt)
+        if contact_id:
+            summary += f"\n  Send: brief {contact_id} for a full brief"
+        supplemental_fub_lines.append(f"* {summary}")
+
+    if calendar_events or supplemental_fub_lines:
+        lines.append("Today's schedule:")
+        for event in calendar_events:
+            lines.append(f"* {format_calendar_event_line(event)}")
+        lines.extend(supplemental_fub_lines)
     else:
-        lines.append("No appointments in FUB today.")
+        lines.extend(format_morning_digest_schedule_lines([]))
 
     new_booking_lines = format_morning_digest_new_bookings()
     if new_booking_lines:

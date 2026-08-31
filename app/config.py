@@ -123,6 +123,16 @@ POSTHOG_API_KEY: str = _optional("POSTHOG_API_KEY")
 POSTHOG_HOST: str = _optional("POSTHOG_HOST")
 POSTHOG_PROJECT_ID: str = _optional("POSTHOG_PROJECT_ID")
 
+# Google Calendar (read-only digest schedule source)
+_google_calendar_credentials = _optional("GOOGLE_CALENDAR_CREDENTIALS_PATH")
+if _google_calendar_credentials:
+    _gcal_credentials_path = Path(_google_calendar_credentials)
+    if not _gcal_credentials_path.is_absolute():
+        _gcal_credentials_path = REPO_ROOT / _gcal_credentials_path
+    GOOGLE_CALENDAR_CREDENTIALS_PATH: Path = _gcal_credentials_path
+else:
+    GOOGLE_CALENDAR_CREDENTIALS_PATH = None
+
 
 def require_test_webhook_queue_for_simulation() -> None:
     """Refuse simulate-failure mode unless the queue DB path is a test file."""
